@@ -5,7 +5,7 @@
 <meta name="viewport"
  content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#101820">
-<title>MeshCore WarDriver v0.7</title>
+<title>MeshCore WarDriver v0.7.1</title>
 
 <!-- Leaflet CSS: load before application styles -->
 <link rel="stylesheet"
@@ -292,7 +292,7 @@ button { padding:8px 7px; font-size:12px; }
 <header>
   <div>
     <h1>MeshCore WarDriver</h1>
-    <small>v0.7 | Repeater map + sync</small>
+    <small>v0.7.1 | Repeater map + sync</small>
   </div>
   <span id="statePill" class="pill">Not recording</span>
 </header>
@@ -524,6 +524,8 @@ const REPEATER_RADIUS_KM = 50;
 
 const recentRadio = [];
 const MAX_RECENT_RADIO = 30;
+// Experimental: 1-byte path-hash matches are route candidates, not transmitter IDs.
+const routeCandidateStats = { packets: 0, ambiguous: 0 };
 
 
 const fixMaxAge = 10000;
@@ -832,6 +834,55 @@ function observeAdvert(bytes) {
   renderNodes();
 }
 
+// MeshCore wire format: header, optional 4-byte transport codes,
+// encoded path length (bits 0-5 count; bits 6-7 hash width minus one),
+// path hashes, then payload. Do not scan arbitrary payload bytes.
+function parseMeshRoute(bytes) {
+  if (!bytes || bytes.length < 2) return null;
+  const header = bytes[0];
+  const routeType = header & 3;
+  const payloadType = (header >> 2) & 15;
+  const version = header >> 6;
+  let offset = 1;
+  if (routeType === 0 || routeType === 3) offset += 4;
+  if (offset >= bytes.length) return null;
+  const encoded = bytes[offset++];
+  const hopCount = encoded & 63;
+  const width = (encoded >> 6) + 1;
+  if (width > 3 || hopCount * width > 64 ||
+      offset + hopCount * width > bytes.length) return null;
+  const hops = [];
+  for (let i = 0; i < hopCount; i++) {
+    hops.push(Array.from(bytes.slice(offset + i * width, offset + (i+1)*width),
+      b => b.toString(16).padStart(2,'0')).join(''));
+  }
+  return {routeType, payloadType, version, width, hopCount,
+    hops, payloadOffset: offset + hopCount * width};
+}
+
+function identifyRouteCandidates(route) {
+  if (!route || route.width !== 1 || !route.hops.length) return [];
+  const results = [];
+  for (let i = 0; i < route.hops.length; i++) {
+    const hash = route.hops[i];
+    const matches = [...repeaterDirectory.values()]
+      .filter(r => r.key.startsWith(hash))
+      .map(r => ({key:r.key, name:r.name}));
+    results.push({hop:i+1, hash, matches});
+  }
+  return results;
+}
+
+function routeLabel(point) {
+  if (point.node_key) return repeaterDirectory.get(point.node_key)?.name || point.node_key.slice(0,12);
+  const candidates = point.route_candidates || [];
+  const groups = candidates.filter(c => c.matches.length);
+  if (!groups.length) return 'Unknown';
+  return groups.map(c => c.hash.toUpperCase() + ': ' +
+    c.matches.slice(0,3).map(r => r.name).join(', ') +
+    (c.matches.length > 3 ? ' +' + (c.matches.length-3) : '')).join(' | ');
+}
+
 function drawPacket(point) {
   if (!map || point.lat == null) return;
 
@@ -848,7 +899,8 @@ function drawPacket(point) {
   .bindPopup(
     "RSSI: " + point.rssi + " dBm" +
     "<br>SNR: " + point.snr + " dB" +
-    "<br>Node: " + (point.node_key ? (repeaterDirectory.get(point.node_key)?.name || point.node_key.slice(0,12)) : "unattributed") +
+    "<br>Identity: " + (point.node_key ? "Advert: " : "Route candidates (not confirmed): ") +
+    routeLabel(point).replaceAll("&","&amp;").replaceAll("<","&lt;") +
     "<br>" +
     new Date(point.timestamp).toLocaleString()
   )
@@ -863,7 +915,7 @@ function addRow(point) {
     point.rssi + " dBm",
     point.snr.toFixed(2) + " dB",
     point.lat == null ? "No" : "Yes",
-    point.node_key ? (repeaterDirectory.get(point.node_key)?.name || point.node_key.slice(0,10)) : "Unknown"
+    routeLabel(point)
   ];
 
   for (const value of values) {
@@ -1002,7 +1054,17 @@ function onBLE(event) {
   $("rssi").textContent = rssi + " dBm";
   $("snr").textContent = snr.toFixed(2) + " dB";
 
-  const payloadHex = hex(bytes.slice(3)).replaceAll(" ", "");
+  const radioBytes = bytes.slice(3);
+  const route = parseMeshRoute(radioBytes);
+  const routeCandidates = identifyRouteCandidates(route);
+  if (routeCandidates.some(c => c.matches.length)) {
+    routeCandidateStats.packets++;
+    if (routeCandidates.some(c => c.matches.length > 1)) routeCandidateStats.ambiguous++;
+    const matches = routeCandidates.filter(c => c.matches.length);
+    const summary = matches.map(c => c.hash + ':' + c.matches.length).join(' ');
+    $("heardNote").textContent = `1-byte route candidates (NOT direct RX): ${summary}; ambiguous packets: ${routeCandidateStats.ambiguous}`;
+  }
+  const payloadHex = hex(radioBytes).replaceAll(" ", "");
   recentRadio.push({time:now, hex:payloadHex, rssi, snr});
   while(recentRadio.length>MAX_RECENT_RADIO) recentRadio.shift();
   // Only attach an identity when a full advertised public key is present
@@ -1023,7 +1085,12 @@ function onBLE(event) {
     rssi,
     snr,
     node_key: known || null,
-    identity_basis: known ? "repeater_public_key_in_payload" : "unknown",
+    identity_basis: known ? "repeater_public_key_in_payload" :
+      routeCandidates.some(c => c.matches.length) ? "route_hash_candidates_only" : "unknown",
+    route_hash_width: route?.width ?? null,
+    route_type: route?.routeType ?? null,
+    route_hops: route?.hops ?? [],
+    route_candidates: routeCandidates,
     payload_hex: hex(bytes.slice(3))
   };
 
@@ -1332,6 +1399,10 @@ async function exportData(kind) {
           "snr",
           "node_key",
           "identity_basis",
+          "route_hash_width",
+          "route_type",
+          "route_hops",
+          "route_candidates",
           "payload_hex"
         ]),
         "text/csv"
@@ -1383,6 +1454,10 @@ async function exportData(kind) {
             snr_db: p.snr,
             node_key: p.node_key || null,
             identity_basis: p.identity_basis || "unknown",
+            route_hash_width: p.route_hash_width ?? null,
+            route_type: p.route_type ?? null,
+            route_hops: p.route_hops || [],
+            route_candidates: p.route_candidates || [],
             accuracy_m: p.accuracy_m
           }
         }))
