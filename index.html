@@ -5,7 +5,7 @@
 <meta name="viewport"
  content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#101820">
-<title>MeshCore WarDriver v0.5</title>
+<title>MeshCore WarDriver v0.5.1</title>
 
 <!-- Leaflet CSS: load before application styles -->
 <link rel="stylesheet"
@@ -99,7 +99,9 @@ button {
 }
 
 button.secondary { background: #3b5362; }
-button.danger { background: #8c4050; }
+button.danger { background: #bd3548; }
+button.active-stop { background: #bd3548; color: white; }
+button.active-on { background: #197c55; color: white; }
 button:disabled { opacity: .45; }
 
 .actions {
@@ -284,7 +286,7 @@ button { padding:8px 7px; font-size:12px; }
 <header>
   <div>
     <h1>MeshCore WarDriver</h1>
-    <small>v0.5 | Local coverage survey</small>
+    <small>v0.5.1 | Local coverage survey</small>
   </div>
   <span id="statePill" class="pill">Not recording</span>
 </header>
@@ -321,7 +323,6 @@ button { padding:8px 7px; font-size:12px; }
   </div>
   <div class="actions" style="margin-top:10px">
     <button id="connect">Connect Wio</button>
-    <button id="reconnect" class="secondary">Reconnect</button>
     <button id="gpsBtn">Start GPS</button>
   </div>
 </div>
@@ -344,8 +345,7 @@ button { padding:8px 7px; font-size:12px; }
 
   <div class="panel">
     <div class="actions">
-      <button id="start">Start recording</button>
-      <button id="stop" class="secondary">Stop recording</button>
+      <button id="recordBtn">Start recording</button>
       <button id="follow" class="secondary">
         Follow GPS: On
       </button>
@@ -410,12 +410,7 @@ button { padding:8px 7px; font-size:12px; }
     </div>
 
     <div class="actions">
-      <button id="disconnect" class="secondary">
-        Disconnect BLE
-      </button>
-      <button id="stopGps" class="secondary">
-        Stop GPS
-      </button>
+      <button id="reconnect" class="secondary">Reconnect Wio</button>
       <button id="newSession" class="danger">
         New session
       </button>
@@ -475,6 +470,7 @@ let gpsWatch = null;
 let fix = null;
 
 let recording = false;
+let bleBusy = false;
 let follow = true;
 
 let rxCount = 0;
@@ -789,6 +785,9 @@ function addRow(point) {
 /* Bluetooth */
 
 async function connect(reuse = false) {
+  if (bleBusy) return;
+  bleBusy = true;
+  updateButtons();
   try {
     if (!navigator.bluetooth) {
       throw new Error("Web Bluetooth unavailable");
@@ -862,6 +861,9 @@ async function connect(reuse = false) {
   } catch (error) {
     $("bleStatus").textContent = "Failed";
     log("BLE: " + error.message);
+  } finally {
+    bleBusy = false;
+    updateButtons();
   }
 }
 
@@ -869,6 +871,7 @@ function onDisconnect() {
   $("bleStatus").textContent = "Disconnected";
   rxChar = null;
   log("BLE disconnected");
+  updateButtons();
 }
 
 function onBLE(event) {
@@ -1054,6 +1057,7 @@ function startGPS() {
       timeout: 15000
     }
   );
+  updateButtons();
 }
 
 function stopGPS() {
@@ -1065,6 +1069,8 @@ function stopGPS() {
   fix = null;
 
   $("gpsStatus").textContent = "Stopped";
+  $("gpsAcc").textContent = "--";
+  updateButtons();
 }
 
 /* Recording */
@@ -1082,6 +1088,7 @@ function startRecord() {
   $("statePill").className = "pill ok";
 
   log("Recording started");
+  updateButtons();
 }
 
 function stopRecord() {
@@ -1091,6 +1098,7 @@ function stopRecord() {
   $("statePill").className = "pill";
 
   log("Recording stopped");
+  updateButtons();
 }
 
 /* Export */
@@ -1312,22 +1320,49 @@ async function newSession() {
   }
 }
 
-/* Buttons */
+/* One-button connection and recording controls */
+function updateButtons() {
+  const connected = Boolean(device?.gatt?.connected);
+  const ble = $("connect");
+  ble.textContent = bleBusy ? "Connecting..." :
+    connected ? "Disconnect Wio" : "Connect Wio";
+  ble.className = connected ? "active-stop" : "";
+  ble.disabled = bleBusy;
 
-$("connect").onclick = () => connect(false);
-$("reconnect").onclick = () => connect(true);
+  const gps = $("gpsBtn");
+  gps.textContent = gpsWatch !== null ? "Stop GPS" : "Start GPS";
+  gps.className = gpsWatch !== null ? "active-stop" : "";
+  gps.setAttribute("aria-pressed", String(gpsWatch !== null));
 
-$("gpsBtn").onclick = startGPS;
-$("stopGps").onclick = stopGPS;
+  const rec = $("recordBtn");
+  rec.textContent = recording ? "Stop recording" : "Start recording";
+  rec.className = recording ? "active-stop" : "";
+  rec.setAttribute("aria-pressed", String(recording));
+  ble.setAttribute("aria-pressed", String(connected));
+}
 
-$("disconnect").onclick = () => {
+$("connect").onclick = () => {
   if (device?.gatt?.connected) {
     device.gatt.disconnect();
+  } else {
+    connect(false);
   }
 };
-
-$("start").onclick = startRecord;
-$("stop").onclick = stopRecord;
+$("reconnect").onclick = () => {
+  if (device?.gatt?.connected) {
+    log("Wio is already connected");
+  } else {
+    connect(true);
+  }
+};
+$("gpsBtn").onclick = () => {
+  if (gpsWatch !== null) stopGPS();
+  else startGPS();
+};
+$("recordBtn").onclick = () => {
+  if (recording) stopRecord();
+  else startRecord();
+};
 
 $("follow").onclick = () => {
   follow = !follow;
@@ -1390,6 +1425,7 @@ document.querySelectorAll("[data-tab]").forEach(
 
 initMap();
 initSession();
+updateButtons();
 renderNodes();
 
 </script>
