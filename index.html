@@ -2,193 +2,479 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MeshCore WarDriver</title>
-  <style>
-    :root { color-scheme: dark; }
-    body {
-      margin: 0; padding: 18px;
-      background: #101820; color: #e9f0f4;
-      font-family: system-ui, sans-serif;
-    }
-    h1 { font-size: 24px; margin-bottom: 4px; }
-    .sub { color: #91a7b5; margin-bottom: 22px; }
-    .panel {
-      background: #1b2934; border: 1px solid #344653;
-      border-radius: 12px; padding: 15px; margin: 12px 0;
-    }
-    button {
-      padding: 12px 16px; margin: 5px 5px 5px 0;
-      border: 0; border-radius: 8px;
-      background: #2186ce; color: white;
-      font-size: 15px; font-weight: 600;
-    }
-    .value { color: #6de4a1; font-weight: 600; }
-    #events {
-      height: 220px; overflow-y: auto;
-      font-family: monospace; font-size: 12px;
-      overflow-wrap: anywhere; white-space: pre-wrap;
-    }
-    .muted { color: #91a7b5; font-size: 13px; }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#101820">
+<title>MeshCore WarDriver v0.2</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:#101820;color:#edf3f7;
+font-family:system-ui,-apple-system,sans-serif}
+header{padding:18px 16px;background:#172631;
+border-bottom:1px solid #344653}
+h1{font-size:22px;margin:0}
+h2{font-size:16px;margin:0 0 12px}
+.sub{font-size:12px;color:#94a9b7;margin-top:5px}
+main{max-width:850px;margin:auto;padding:12px}
+.panel{background:#1b2934;border:1px solid #344653;
+border-radius:12px;padding:15px;margin-bottom:12px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);
+gap:9px;margin-bottom:12px}
+.metric{background:#1b2934;border:1px solid #344653;
+border-radius:10px;padding:12px;min-width:0}
+.metric small{display:block;color:#94a9b7;font-size:11px}
+.metric strong{display:block;font-size:22px;margin-top:5px;
+overflow-wrap:anywhere}
+button{background:#2386c8;border:0;border-radius:8px;
+padding:12px;color:white;font-size:14px;font-weight:600;
+margin:4px 4px 4px 0;cursor:pointer}
+button.secondary{background:#344653}
+button:disabled{opacity:.45}
+.status{font-weight:600;color:#f2bc67}
+.good{color:#65dfa1}
+.bad{color:#ff8585}
+.row{display:flex;justify-content:space-between;
+gap:8px;margin:9px 0;font-size:13px}
+.muted{color:#94a9b7}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;color:#94a9b7}
+td,th{padding:9px 5px;border-bottom:1px solid #344653}
+.scroll{overflow-x:auto}
+#debug{font:11px monospace;white-space:pre-wrap;
+overflow-wrap:anywhere;max-height:150px;overflow-y:auto;
+color:#b8c9d4}
+footer{padding:15px;text-align:center;
+font-size:11px;color:#94a9b7}
+</style>
 </head>
 <body>
-  <h1>MeshCore WarDriver</h1>
-  <div class="sub">v0.1 | Bluetooth + GPS diagnostic</div>
 
-  <div class="panel">
-    <h3>Bluetooth</h3>
-    <p>Status: <span id="ble" class="value">Disconnected</span></p>
-    <button id="connect">Connect Wio</button>
-    <button id="disconnect">Disconnect</button>
-  </div>
+<header>
+<h1>MeshCore WarDriver</h1>
+<div class="sub">v0.2 | Passive BLE reception logger</div>
+</header>
 
-  <div class="panel">
-    <h3>GPS</h3>
-    <p>Status: <span id="gps" class="value">Not started</span></p>
-    <p>Coordinates: <span id="coords">--</span></p>
-    <p>Accuracy: <span id="accuracy">--</span></p>
-    <button id="startGps">Start GPS</button>
-    <button id="stopGps">Stop GPS</button>
-  </div>
+<main>
 
-  <div class="panel">
-    <h3>Received Bluetooth Data</h3>
-    <p>Notifications: <span id="count" class="value">0</span></p>
-    <div id="events"></div>
-    <button id="clear">Clear log</button>
-  </div>
+<section class="panel">
+<h2>Connections</h2>
+<div class="row">
+<span>MeshCore Bluetooth</span>
+<span id="bleStatus" class="status">Disconnected</span>
+</div>
+<div class="row">
+<span>Phone GPS</span>
+<span id="gpsStatus" class="status">Stopped</span>
+</div>
+<button id="connectBtn">Connect Wio</button>
+<button id="gpsBtn">Start GPS</button>
+<button id="disconnectBtn" class="secondary">Disconnect</button>
+</section>
 
-  <p class="muted">
-    Diagnostic only. No MeshCore commands are sent.
-    No GPS or packet data is uploaded.
-  </p>
+<div class="grid">
+<div class="metric">
+<small>RX packets</small>
+<strong id="rxCount">0</strong>
+</div>
+<div class="metric">
+<small>Last RSSI</small>
+<strong id="lastRssi">--</strong>
+</div>
+<div class="metric">
+<small>Last SNR</small>
+<strong id="lastSnr">--</strong>
+</div>
+</div>
+
+<section class="panel">
+<h2>GPS Position</h2>
+<div class="row"><span>Latitude</span>
+<strong id="lat">--</strong></div>
+<div class="row"><span>Longitude</span>
+<strong id="lon">--</strong></div>
+<div class="row"><span>Accuracy</span>
+<strong id="accuracy">--</strong></div>
+<div class="row"><span>Fix age</span>
+<strong id="fixAge">--</strong></div>
+<div class="row"><span>Speed</span>
+<strong id="speed">--</strong></div>
+</section>
+
+<section class="panel">
+<h2>Recording</h2>
+<div class="row">
+<span>Status</span>
+<strong id="recordStatus" class="status">Stopped</strong>
+</div>
+<div class="row">
+<span>Saved receptions</span>
+<strong id="savedCount">0</strong>
+</div>
+<div class="row">
+<span>Without valid GPS</span>
+<strong id="noGpsCount">0</strong>
+</div>
+<button id="startRecord">Start Recording</button>
+<button id="stopRecord" class="secondary">Stop</button>
+<button id="exportBtn">Export CSV</button>
+<p class="muted" style="font-size:12px">
+Recording is held in browser memory until exported.
+Keep this page open and export before closing it.
+</p>
+</section>
+
+<section class="panel">
+<h2>Recent Radio Receptions</h2>
+<div class="scroll">
+<table>
+<thead>
+<tr>
+<th>Time</th>
+<th>RSSI</th>
+<th>SNR</th>
+<th>GPS</th>
+</tr>
+</thead>
+<tbody id="packetTable"></tbody>
+</table>
+</div>
+</section>
+
+<section class="panel">
+<h2>Diagnostics</h2>
+<div class="row"><span>BLE notifications</span>
+<strong id="bleCount">0</strong></div>
+<div id="debug"></div>
+<button id="clearDebug" class="secondary">Clear diagnostics</button>
+</section>
+
+</main>
+
+<footer>
+Receive-only browser interface.
+No MeshCore commands or GPS uploads.
+</footer>
 
 <script>
-const SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
-const RX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
+"use strict";
 
-let  = null;
-let characteristic = null;
-let gpsWatch = null;
-let notifications = 0;
+const SERVICE =
+ "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+const RX =
+ "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
 
 const $ = id => document.getElementById(id);
 
-function log(message) {
-  const time = new Date().toLocaleTimeString();
-  $("events").textContent =
-    `[${time}] ${message}\n` + $("events").textContent;
+let device = null;
+let characteristic = null;
+let gpsWatch = null;
+let latestFix = null;
+let recording = false;
+let rxCount = 0;
+let bleCount = 0;
+let noGpsCount = 0;
+let records = [];
+let sessionStarted = null;
+
+const MAX_FIX_AGE_MS = 10000;
+const MAX_RECORDS = 50000;
+
+function debug(message) {
+ const line = new Date().toLocaleTimeString()
+   + " " + message;
+ const box = $("debug");
+ box.textContent = line + "\n" + box.textContent;
+ if (box.textContent.length > 6000)
+   box.textContent = box.textContent.slice(0,6000);
 }
 
-function toHex(view) {
-  return Array.from(
-    new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
-    b => b.toString(16).padStart(2, "0")
-  ).join(" ");
+function signed8(n) {
+ return n > 127 ? n - 256 : n;
 }
 
-function received(event) {
-  notifications++;
-  $("count").textContent = notifications;
-  log("RX BLE: " + toHex(event.target.value));
+function toHex(bytes) {
+ return Array.from(bytes, b =>
+   b.toString(16).padStart(2,"0")).join(" ");
 }
 
-function disconnected() {
-  $("ble").textContent = "Disconnected";
-  characteristic = null;
-  log("Bluetooth disconnected");
+function onDisconnect() {
+ $("bleStatus").textContent = "Disconnected";
+ $("bleStatus").className = "status bad";
+ characteristic = null;
+ debug("Bluetooth disconnected");
 }
 
-$("connect").onclick = async () => {
-  try {
-    if (!navigator.bluetooth) {
-      throw new Error("Web Bluetooth is unavailable in this browser");
-    }
+async function connectBluetooth() {
+ try {
+  if (!navigator.bluetooth)
+   throw new Error("Web Bluetooth unavailable");
 
-    $("ble").textContent = "Connecting...";
+  $("bleStatus").textContent = "Connecting...";
 
-    device = await navigator.bluetooth.requestDevice({
-  filters: [
-    { services: [SERVICE] }
-  ]
-});
+  device = await navigator.bluetooth.requestDevice({
+   filters:[{services:[SERVICE]}]
+  });
 
-    device.addEventListener(
-      "gattserverdisconnected", disconnected
-    );
-
-    const server = await device.gatt.connect();
-    const service = await server.getPrimaryService(SERVICE);
-    characteristic = await service.getCharacteristic(RX);
-
-    characteristic.addEventListener(
-      "characteristicvaluechanged", received
-    );
-
-    await characteristic.startNotifications();
-
-    $("ble").textContent = "Connected: " + (device.name || "Wio");
-    log("BLE connected; notifications enabled");
-
-  } catch (error) {
-    $("ble").textContent = "Connection failed";
-    log("BLE ERROR: " + error.message);
-  }
-};
-
-$("disconnect").onclick = () => {
-  if (device && device.gatt.connected) {
-    device.gatt.disconnect();
-  }
-};
-
-$("startGps").onclick = () => {
-  if (!navigator.geolocation) {
-    $("gps").textContent = "GPS unavailable";
-    return;
-  }
-
-  if (gpsWatch !== null) return;
-
-  $("gps").textContent = "Waiting for location...";
-
-  gpsWatch = navigator.geolocation.watchPosition(
-    position => {
-      const p = position.coords;
-      $("gps").textContent = "Location available";
-      $("coords").textContent =
-        p.latitude.toFixed(6) + ", " +
-        p.longitude.toFixed(6);
-      $("accuracy").textContent =
-        Math.round(p.accuracy) + " metres";
-    },
-    error => {
-      $("gps").textContent = "Error: " + error.message;
-      log("GPS ERROR: " + error.message);
-    },
-    {
-      enableHighAccuracy: true,
-      maximumAge: 1000,
-      timeout: 15000
-    }
+  device.addEventListener(
+   "gattserverdisconnected",onDisconnect
   );
-};
 
-$("stopGps").onclick = () => {
-  if (gpsWatch !== null) {
-    navigator.geolocation.clearWatch(gpsWatch);
-    gpsWatch = null;
+  const server = await device.gatt.connect();
+  const service = await server.getPrimaryService(SERVICE);
+  characteristic = await service.getCharacteristic(RX);
+
+  characteristic.addEventListener(
+   "characteristicvaluechanged",handleBLE
+  );
+
+  await characteristic.startNotifications();
+
+  $("bleStatus").textContent = "Connected";
+  $("bleStatus").className = "status good";
+  debug("Connected: " + (device.name || "MeshCore"));
+
+ } catch(e) {
+  $("bleStatus").textContent = "Failed";
+  $("bleStatus").className = "status bad";
+  debug("BLE error: " + e.message);
+ }
+}
+
+function startGPS() {
+ if (!navigator.geolocation) {
+  debug("Geolocation unavailable");
+  return;
+ }
+ if (gpsWatch !== null) return;
+
+ $("gpsStatus").textContent = "Waiting...";
+
+ gpsWatch = navigator.geolocation.watchPosition(
+  position => {
+   const c = position.coords;
+
+   latestFix = {
+    lat:c.latitude,
+    lon:c.longitude,
+    accuracy:c.accuracy,
+    speed:c.speed,
+    timestamp:position.timestamp
+   };
+
+   $("lat").textContent = c.latitude.toFixed(6);
+   $("lon").textContent = c.longitude.toFixed(6);
+   $("accuracy").textContent =
+     Math.round(c.accuracy) + " m";
+   $("speed").textContent =
+     c.speed === null ? "--" :
+     (c.speed * 3.6).toFixed(1) + " km/h";
+
+   $("gpsStatus").textContent = "Active";
+   $("gpsStatus").className = "status good";
+  },
+  error => {
+   $("gpsStatus").textContent = "GPS error";
+   $("gpsStatus").className = "status bad";
+   debug("GPS: " + error.message);
+  },
+  {
+   enableHighAccuracy:true,
+   maximumAge:1000,
+   timeout:15000
   }
-  $("gps").textContent = "Stopped";
+ );
+}
+
+function getValidFix(now) {
+ if (!latestFix) return null;
+ const age = now - latestFix.timestamp;
+ if (age < 0 || age > MAX_FIX_AGE_MS)
+   return null;
+ return latestFix;
+}
+
+function handleBLE(event) {
+ const view = event.target.value;
+ const bytes = new Uint8Array(
+  view.buffer,view.byteOffset,view.byteLength
+ );
+
+ bleCount++;
+ $("bleCount").textContent = bleCount;
+
+ if (!bytes.length) return;
+
+ // MeshCore 0x88: raw received radio frame.
+ // Byte 1: signed SNR in quarter-dB.
+ // Byte 2: signed RSSI in dBm.
+ // Remaining bytes: radio packet.
+ if (bytes[0] !== 0x88) return;
+
+ if (bytes.length < 4) {
+  debug("Malformed 0x88 event");
+  return;
+ }
+
+ const snr = signed8(bytes[1]) / 4;
+ const rssi = signed8(bytes[2]);
+ const payload = bytes.slice(3);
+ const now = Date.now();
+ const fix = getValidFix(now);
+
+ rxCount++;
+ $("rxCount").textContent = rxCount;
+ $("lastRssi").textContent = rssi + " dBm";
+ $("lastSnr").textContent = snr.toFixed(2) + " dB";
+
+ addTableRow(
+  new Date(now).toLocaleTimeString(),
+  rssi,snr,Boolean(fix)
+ );
+
+ if (recording) {
+  if (records.length >= MAX_RECORDS) {
+   recording = false;
+   $("recordStatus").textContent = "Memory limit";
+   $("recordStatus").className = "status bad";
+   debug("Recording limit reached; export now");
+   return;
+  }
+
+  if (!fix) noGpsCount++;
+
+  records.push({
+   timestamp:new Date(now).toISOString(),
+   latitude:fix ? fix.lat : "",
+   longitude:fix ? fix.lon : "",
+   accuracy_m:fix ? fix.accuracy : "",
+   gps_fix_age_ms:fix ? now-fix.timestamp : "",
+   speed_kmh:fix && fix.speed !== null ?
+     fix.speed*3.6 : "",
+   rssi_dbm:rssi,
+   snr_db:snr,
+   payload_hex:toHex(payload)
+  });
+
+  $("savedCount").textContent = records.length;
+  $("noGpsCount").textContent = noGpsCount;
+ }
+}
+
+function addTableRow(time,rssi,snr,hasGPS) {
+ const tr = document.createElement("tr");
+
+ for (const value of [
+  time,
+  rssi + " dBm",
+  snr.toFixed(2) + " dB",
+  hasGPS ? "Yes" : "No"
+ ]) {
+  const td = document.createElement("td");
+  td.textContent = value;
+  tr.appendChild(td);
+ }
+
+ const table = $("packetTable");
+ table.prepend(tr);
+
+ while (table.children.length > 30)
+  table.lastElementChild.remove();
+}
+
+function startRecording() {
+ if (recording) return;
+
+ if (records.length) {
+  debug("Existing records retained; continuing session");
+ } else {
+  sessionStarted = new Date();
+ }
+
+ recording = true;
+ $("recordStatus").textContent = "Recording";
+ $("recordStatus").className = "status good";
+ debug("Recording started");
+}
+
+function stopRecording() {
+ recording = false;
+ $("recordStatus").textContent = "Stopped";
+ $("recordStatus").className = "status";
+ debug("Recording stopped");
+}
+
+function csvCell(value) {
+ const text = String(value ?? "");
+ return '"' + text.replace(/"/g,'""') + '"';
+}
+
+function exportCSV() {
+ if (!records.length) {
+  debug("No records to export");
+  return;
+ }
+
+ const fields = [
+  "timestamp","latitude","longitude",
+  "accuracy_m","gps_fix_age_ms","speed_kmh",
+  "rssi_dbm","snr_db","payload_hex"
+ ];
+
+ const lines = [fields.join(",")];
+
+ for (const record of records) {
+  lines.push(fields.map(
+   field => csvCell(record[field])
+  ).join(","));
+ }
+
+ const blob = new Blob(
+  [lines.join("\r\n")],
+  {type:"text/csv;charset=utf-8"}
+ );
+
+ const url = URL.createObjectURL(blob);
+ const a = document.createElement("a");
+ const date = (sessionStarted || new Date())
+  .toISOString().replace(/[:.]/g,"-");
+
+ a.href = url;
+ a.download = "MeshCore-WarDriver-" + date + ".csv";
+ document.body.appendChild(a);
+ a.click();
+ a.remove();
+
+ setTimeout(() => URL.revokeObjectURL(url),30000);
+ debug("CSV export requested: " + records.length + " rows");
+}
+
+$("connectBtn").onclick = connectBluetooth;
+$("gpsBtn").onclick = startGPS;
+$("disconnectBtn").onclick = () => {
+ if (device?.gatt?.connected)
+  device.gatt.disconnect();
+};
+$("startRecord").onclick = startRecording;
+$("stopRecord").onclick = stopRecording;
+$("exportBtn").onclick = exportCSV;
+$("clearDebug").onclick = () => {
+ $("debug").textContent = "";
 };
 
-$("clear").onclick = () => {
-  $("events").textContent = "";
-  notifications = 0;
-  $("count").textContent = "0";
-};
+setInterval(() => {
+ if (!latestFix) {
+  $("fixAge").textContent = "--";
+  return;
+ }
+ const age = Math.max(0,Date.now()-latestFix.timestamp);
+ $("fixAge").textContent = (age/1000).toFixed(1)+" s";
+ if (age > MAX_FIX_AGE_MS) {
+  $("gpsStatus").textContent = "Fix stale";
+  $("gpsStatus").className = "status bad";
+ }
+},1000);
+
 </script>
 </body>
 </html>
