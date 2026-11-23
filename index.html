@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6,7 +5,7 @@
 <meta name="viewport"
  content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#101820">
-<title>MeshCore WarDriver v0.3.1</title>
+<title>MeshCore WarDriver v0.5</title>
 
 <!-- Leaflet CSS: load before application styles -->
 <link rel="stylesheet"
@@ -182,9 +181,8 @@ th { color: #9aafbd; }
   position: relative !important;
   display: block;
   width: 100%;
-  height: 55dvh;
-  min-height: 350px;
-  max-height: 650px;
+  height: 100%;
+  min-height: 0;
   overflow: hidden !important;
   border-radius: 12px;
   background: #263943;
@@ -250,6 +248,34 @@ th { color: #9aafbd; }
   .stat small { font-size: 10px; }
   button { font-size: 12px; }
 }
+
+/* Single-screen mobile dashboard */
+html,body { height:100%; }
+body { height:100dvh; overflow:hidden; display:flex; flex-direction:column; }
+header { flex:0 0 auto; padding:7px 10px; }
+.wrap { flex:1; min-height:0; width:100%; display:flex; flex-direction:column; padding:6px 8px 8px; overflow:hidden; }
+.stats { flex:0 0 auto; margin-bottom:5px; gap:4px; }
+.stat { padding:5px 2px; }
+.stat b { font-size:15px; }
+.wrap > .panel { flex:0 0 auto; margin:3px 0; padding:6px 9px; }
+.wrap > .panel .row { padding:2px 0; }
+.wrap > .panel .actions { margin-top:4px !important; }
+button { padding:8px 7px; font-size:12px; }
+.tabs { flex:0 0 auto; margin:4px 0; gap:4px; }
+.tabs button { padding:7px; }
+.view.active { display:flex; flex-direction:column; flex:1; min-height:0; overflow:hidden; }
+#mapView > #map { flex:1 1 auto; min-height:100px; }
+#mapView > .panel { flex:0 0 auto; margin:4px 0 0; padding:7px; }
+#mapView > .panel .row, #mapView > .panel .foot { display:none; }
+#packetView, #settingsView { overflow-y:auto; }
+.wrap > .foot { display:none; }
+#heardPanel { flex:0 0 auto; background:#1c2b36; border:1px solid #344956; border-radius:10px; padding:6px 9px; margin-top:4px; }
+#heardPanel .heardTitle { font-size:12px; font-weight:700; margin-bottom:3px; }
+#heardList { display:grid; gap:2px; }
+.heardItem { display:flex; justify-content:space-between; gap:8px; font-size:12px; white-space:nowrap; }
+.heardItem span:first-child { overflow:hidden; text-overflow:ellipsis; }
+#heardNote { color:#9aafbd; font-size:10px; }
+@media(max-height:650px) { #heardList .heardItem:nth-child(n+3) { display:none; } header h1 {font-size:16px} }
 </style>
 </head>
 
@@ -258,7 +284,7 @@ th { color: #9aafbd; }
 <header>
   <div>
     <h1>MeshCore WarDriver</h1>
-    <small>v0.3.1 | Local coverage survey</small>
+    <small>v0.5 | Local coverage survey</small>
   </div>
   <span id="statePill" class="pill">Not recording</span>
 </header>
@@ -310,6 +336,12 @@ th { color: #9aafbd; }
 
   <div id="map"></div>
 
+  <div id="heardPanel">
+    <div class="heardTitle">Recent advertised nodes <span id="nodeCount" class="muted">0</span></div>
+    <div id="heardList"><div class="heardItem muted">Waiting for advertisements...</div></div>
+    <div id="heardNote">Names/types require verified advert decoding. Unknown packets remain unattributed.</div>
+  </div>
+
   <div class="panel">
     <div class="actions">
       <button id="start">Start recording</button>
@@ -358,6 +390,7 @@ th { color: #9aafbd; }
             <th>RSSI</th>
             <th>SNR</th>
             <th>GPS</th>
+            <th>Node</th>
           </tr>
         </thead>
         <tbody id="packetRows"></tbody>
@@ -457,6 +490,10 @@ let map = null;
 let trackLine = null;
 let positionMarker = null;
 let packetLayer = null;
+const nodeDirectory = new Map();
+const recentRadio = [];
+const MAX_RECENT_RADIO = 30;
+
 
 const fixMaxAge = 10000;
 
@@ -662,6 +699,46 @@ function drawTrack(point) {
   ]);
 }
 
+function renderNodes() {
+  const entries = [...nodeDirectory.values()].sort((a,b)=>b.lastSeen-a.lastSeen);
+  $("nodeCount").textContent = String(entries.length);
+  const list = $("heardList");
+  list.textContent = "";
+  if (!entries.length) {
+    const el=document.createElement("div");
+    el.className="heardItem muted";
+    el.textContent="No advertisements detected yet";
+    list.appendChild(el);
+  }
+  entries.slice(0,3).forEach(node=>{
+    const el=document.createElement("div"); el.className="heardItem";
+    const name=document.createElement("span"); name.textContent="Key " + node.key.slice(0,12) + "...";
+    const val=document.createElement("span");
+    val.textContent=node.rssi == null ? "advert heard" : node.rssi+" dBm";
+    el.append(name,val); list.appendChild(el);
+  });
+}
+function observeAdvert(bytes) {
+  if(bytes.length < 33) return;
+  const key=hex(bytes.slice(1,33)).replaceAll(" ","");
+  const now=Date.now();
+  // A companion 0x80 notification confirms an advertised public key,
+  // but does not itself carry RF metrics or establish node type.
+  let matched=null;
+  for (let i=recentRadio.length-1;i>=0;i--) {
+    const p=recentRadio[i];
+    if(now-p.time>3000) continue;
+    if(p.hex.includes(key)) { matched=p; break; }
+  }
+  const old=nodeDirectory.get(key);
+  nodeDirectory.set(key, {
+    key, lastSeen:now,
+    rssi:matched ? matched.rssi : (old?.rssi ?? null),
+    snr:matched ? matched.snr : (old?.snr ?? null)
+  });
+  renderNodes();
+}
+
 function drawPacket(point) {
   if (!map || point.lat == null) return;
 
@@ -678,6 +755,7 @@ function drawPacket(point) {
   .bindPopup(
     "RSSI: " + point.rssi + " dBm" +
     "<br>SNR: " + point.snr + " dB" +
+    "<br>Node: " + (point.node_key ? "advert " + point.node_key.slice(0,12) : "unattributed") +
     "<br>" +
     new Date(point.timestamp).toLocaleString()
   )
@@ -691,7 +769,8 @@ function addRow(point) {
     new Date(point.timestamp).toLocaleTimeString(),
     point.rssi + " dBm",
     point.snr.toFixed(2) + " dB",
-    point.lat == null ? "No" : "Yes"
+    point.lat == null ? "No" : "Yes",
+    point.node_key ? point.node_key.slice(0,10) : "Unknown"
   ];
 
   for (const value of values) {
@@ -804,6 +883,10 @@ function onBLE(event) {
   bleCount++;
   $("bleCount").textContent = bleCount;
 
+  if (bytes[0] === 0x80) {
+    observeAdvert(bytes);
+    return;
+  }
   // Only process MeshCore 0x88 radio events.
   if (bytes.length < 4 || bytes[0] !== 0x88) {
     return;
@@ -819,6 +902,13 @@ function onBLE(event) {
   $("rssi").textContent = rssi + " dBm";
   $("snr").textContent = snr.toFixed(2) + " dB";
 
+  const payloadHex = hex(bytes.slice(3)).replaceAll(" ", "");
+  recentRadio.push({time:now, hex:payloadHex, rssi, snr});
+  while(recentRadio.length>MAX_RECENT_RADIO) recentRadio.shift();
+  // Only attach an identity when a full advertised public key is present
+  // in the received raw packet. This does NOT establish the immediate
+  // transmitting repeater for arbitrary forwarded traffic.
+  const known = [...nodeDirectory.keys()].find(key => payloadHex.includes(key));
   const valid = fix &&
     now - fix.timestamp >= 0 &&
     now - fix.timestamp <= fixMaxAge;
@@ -832,6 +922,8 @@ function onBLE(event) {
     fix_age_ms: valid ? now - fix.timestamp : null,
     rssi,
     snr,
+    node_key: known || null,
+    identity_basis: known ? "advert_public_key_in_payload" : "unknown",
     payload_hex: hex(bytes.slice(3))
   };
 
@@ -1094,6 +1186,8 @@ async function exportData(kind) {
           "fix_age_ms",
           "rssi",
           "snr",
+          "node_key",
+          "identity_basis",
           "payload_hex"
         ]),
         "text/csv"
@@ -1143,6 +1237,8 @@ async function exportData(kind) {
             timestamp: p.timestamp,
             rssi_dbm: p.rssi,
             snr_db: p.snr,
+            node_key: p.node_key || null,
+            identity_basis: p.identity_basis || "unknown",
             accuracy_m: p.accuracy_m
           }
         }))
@@ -1202,6 +1298,7 @@ async function newSession() {
     $("rxCount").textContent = "0";
     $("packetRows").textContent = "";
 
+    nodeDirectory.clear(); renderNodes();
     if (packetLayer) packetLayer.clearLayers();
     if (trackLine) trackLine.setLatLngs([]);
 
@@ -1293,6 +1390,7 @@ document.querySelectorAll("[data-tab]").forEach(
 
 initMap();
 initSession();
+renderNodes();
 
 </script>
 </body>
