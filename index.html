@@ -1,0 +1,193 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MeshCore WarDriver</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0; padding: 18px;
+      background: #101820; color: #e9f0f4;
+      font-family: system-ui, sans-serif;
+    }
+    h1 { font-size: 24px; margin-bottom: 4px; }
+    .sub { color: #91a7b5; margin-bottom: 22px; }
+    .panel {
+      background: #1b2934; border: 1px solid #344653;
+      border-radius: 12px; padding: 15px; margin: 12px 0;
+    }
+    button {
+      padding: 12px 16px; margin: 5px 5px 5px 0;
+      border: 0; border-radius: 8px;
+      background: #2186ce; color: white;
+      font-size: 15px; font-weight: 600;
+    }
+    .value { color: #6de4a1; font-weight: 600; }
+    #events {
+      height: 220px; overflow-y: auto;
+      font-family: monospace; font-size: 12px;
+      overflow-wrap: anywhere; white-space: pre-wrap;
+    }
+    .muted { color: #91a7b5; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>MeshCore WarDriver</h1>
+  <div class="sub">v0.1 | Bluetooth + GPS diagnostic</div>
+
+  <div class="panel">
+    <h3>Bluetooth</h3>
+    <p>Status: <span id="ble" class="value">Disconnected</span></p>
+    <button id="connect">Connect Wio</button>
+    <button id="disconnect">Disconnect</button>
+  </div>
+
+  <div class="panel">
+    <h3>GPS</h3>
+    <p>Status: <span id="gps" class="value">Not started</span></p>
+    <p>Coordinates: <span id="coords">--</span></p>
+    <p>Accuracy: <span id="accuracy">--</span></p>
+    <button id="startGps">Start GPS</button>
+    <button id="stopGps">Stop GPS</button>
+  </div>
+
+  <div class="panel">
+    <h3>Received Bluetooth Data</h3>
+    <p>Notifications: <span id="count" class="value">0</span></p>
+    <div id="events"></div>
+    <button id="clear">Clear log</button>
+  </div>
+
+  <p class="muted">
+    Diagnostic only. No MeshCore commands are sent.
+    No GPS or packet data is uploaded.
+  </p>
+
+<script>
+const SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+const RX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
+
+let device = null;
+let characteristic = null;
+let gpsWatch = null;
+let notifications = 0;
+
+const $ = id => document.getElementById(id);
+
+function log(message) {
+  const time = new Date().toLocaleTimeString();
+  $("events").textContent =
+    `[${time}] ${message}\n` + $("events").textContent;
+}
+
+function toHex(view) {
+  return Array.from(
+    new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
+    b => b.toString(16).padStart(2, "0")
+  ).join(" ");
+}
+
+function received(event) {
+  notifications++;
+  $("count").textContent = notifications;
+  log("RX BLE: " + toHex(event.target.value));
+}
+
+function disconnected() {
+  $("ble").textContent = "Disconnected";
+  characteristic = null;
+  log("Bluetooth disconnected");
+}
+
+$("connect").onclick = async () => {
+  try {
+    if (!navigator.bluetooth) {
+      throw new Error("Web Bluetooth is unavailable in this browser");
+    }
+
+    $("ble").textContent = "Connecting...";
+
+    device = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: [SERVICE]
+    });
+
+    device.addEventListener(
+      "gattserverdisconnected", disconnected
+    );
+
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE);
+    characteristic = await service.getCharacteristic(RX);
+
+    characteristic.addEventListener(
+      "characteristicvaluechanged", received
+    );
+
+    await characteristic.startNotifications();
+
+    $("ble").textContent = "Connected: " + (device.name || "Wio");
+    log("BLE connected; notifications enabled");
+
+  } catch (error) {
+    $("ble").textContent = "Connection failed";
+    log("BLE ERROR: " + error.message);
+  }
+};
+
+$("disconnect").onclick = () => {
+  if (device && device.gatt.connected) {
+    device.gatt.disconnect();
+  }
+};
+
+$("startGps").onclick = () => {
+  if (!navigator.geolocation) {
+    $("gps").textContent = "GPS unavailable";
+    return;
+  }
+
+  if (gpsWatch !== null) return;
+
+  $("gps").textContent = "Waiting for location...";
+
+  gpsWatch = navigator.geolocation.watchPosition(
+    position => {
+      const p = position.coords;
+      $("gps").textContent = "Location available";
+      $("coords").textContent =
+        p.latitude.toFixed(6) + ", " +
+        p.longitude.toFixed(6);
+      $("accuracy").textContent =
+        Math.round(p.accuracy) + " metres";
+    },
+    error => {
+      $("gps").textContent = "Error: " + error.message;
+      log("GPS ERROR: " + error.message);
+    },
+    {
+      enableHighAccuracy: true,
+      maximumAge: 1000,
+      timeout: 15000
+    }
+  );
+};
+
+$("stopGps").onclick = () => {
+  if (gpsWatch !== null) {
+    navigator.geolocation.clearWatch(gpsWatch);
+    gpsWatch = null;
+  }
+  $("gps").textContent = "Stopped";
+};
+
+$("clear").onclick = () => {
+  $("events").textContent = "";
+  notifications = 0;
+  $("count").textContent = "0";
+};
+</script>
+</body>
+</html>
