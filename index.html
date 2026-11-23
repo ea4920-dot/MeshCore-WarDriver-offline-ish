@@ -69,7 +69,7 @@
 const SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 const RX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
 
-let device = null;
+let  = null;
 let characteristic = null;
 let gpsWatch = null;
 let notifications = 0;
@@ -110,9 +110,10 @@ $("connect").onclick = async () => {
     $("ble").textContent = "Connecting...";
 
     device = await navigator.bluetooth.requestDevice({
-      acceptAllDevices: true,
-      optionalServices: [SERVICE]
-    });
+  filters: [
+    { services: [SERVICE] }
+  ]
+});
 
     device.addEventListener(
       "gattserverdisconnected", disconnected
