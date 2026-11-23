@@ -1,53 +1,1299 @@
-<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#101820"><title>MeshCore WarDriver v0.3</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoLZ2xU4k=" crossorigin="">
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport"
+ content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101820">
+<title>MeshCore WarDriver v0.3.1</title>
+
+<!-- Leaflet CSS: load before application styles -->
+<link rel="stylesheet"
+ href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+
 <style>
-:root{color-scheme:dark;font-family:system-ui,-apple-system,sans-serif}*{box-sizing:border-box}body{margin:0;background:#101820;color:#edf3f7}header{padding:12px 14px;background:#172631;display:flex;align-items:center;justify-content:space-between;gap:10px}h1{font-size:19px;margin:0}small,.muted{color:#9aafbd}small{font-size:11px}.pill{font-size:11px;border:1px solid #435764;border-radius:20px;padding:6px 9px}.wrap{max-width:950px;margin:auto;padding:10px 10px 80px}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-bottom:10px}.stat,.panel{background:#1c2b36;border:1px solid #344956;border-radius:12px}.stat{padding:9px 6px;text-align:center;min-width:0}.stat b{display:block;font-size:17px;overflow-wrap:anywhere}.stat small{display:block}.panel{padding:12px;margin:10px 0}button{border:0;background:#2186c7;color:#fff;border-radius:9px;padding:11px 12px;font-weight:650;font-size:14px;cursor:pointer}button.secondary{background:#3b5362}button.danger{background:#8c4050}button:disabled{opacity:.45}.actions{display:flex;flex-wrap:wrap;gap:7px}.actions button{flex:1 1 120px}#map{height:min(58vh,570px);min-height:310px;background:#263943;border-radius:10px;z-index:0}.leaflet-container{background:#263943}.leaflet-popup-content-wrapper,.leaflet-popup-tip{background:#1c2b36;color:white}.tabs{display:flex;gap:7px;margin:10px 0}.tabs button{flex:1;background:#314654}.tabs button.active{background:#2186c7}.view{display:none}.view.active{display:block}.row{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid #354956;font-size:13px}.row:last-child{border:0}table{border-collapse:collapse;width:100%;font-size:12px}td,th{padding:9px 5px;border-bottom:1px solid #344956;text-align:left}th{color:#9aafbd}.scroll{overflow:auto}#debug{white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow:auto;font:11px monospace;color:#b6cbd8}.foot{font-size:11px;color:#9aafbd;margin-top:12px}.ok{color:#69e3a1}.warn{color:#f1c078}.bad{color:#ff9393}@media(max-width:380px){.stat b{font-size:14px}.stat small{font-size:10px}button{font-size:12px}}
-</style></head><body>
-<header><div><h1>MeshCore WarDriver</h1><small>v0.3 · Local coverage survey</small></div><span id="statePill" class="pill">Not recording</span></header>
-<div class="wrap"><div class="stats"><div class="stat"><small>RX packets</small><b id="rxCount">0</b></div><div class="stat"><small>RSSI</small><b id="rssi">--</b></div><div class="stat"><small>SNR</small><b id="snr">--</b></div><div class="stat"><small>GPS accuracy</small><b id="gpsAcc">--</b></div></div>
-<div class="panel"><div class="row"><span>Bluetooth</span><b id="bleStatus">Disconnected</b></div><div class="row"><span>GPS</span><b id="gpsStatus">Stopped</b></div><div class="actions" style="margin-top:10px"><button id="connect">Connect Wio</button><button id="reconnect" class="secondary">Reconnect</button><button id="gpsBtn">Start GPS</button></div></div>
-<div class="tabs"><button class="active" data-tab="mapView">Map</button><button data-tab="packetView">Packets</button><button data-tab="settingsView">Settings</button></div>
-<section id="mapView" class="view active"><div id="map"></div><div class="panel"><div class="actions"><button id="start">Start recording</button><button id="stop" class="secondary">Stop recording</button><button id="follow" class="secondary">Follow GPS: On</button></div><div class="row"><span>Recorded packets</span><b id="savedPackets">0</b></div><div class="row"><span>Recorded track points</span><b id="savedTrack">0</b></div><div class="row"><span>Location</span><b id="coords">Waiting for GPS</b></div><div class="row"><span>Session</span><b id="sessionStatus">No session</b></div><p class="foot">Map colours: green ≥ -90 dBm; yellow ≥ -110 dBm; orange ≥ -120 dBm; red below -120 dBm. These are display thresholds, not validated coverage grades. No reception does not prove no coverage.</p></div></section>
-<section id="packetView" class="view"><div class="panel"><h3>Latest radio receptions</h3><div class="scroll"><table><thead><tr><th>Time</th><th>RSSI</th><th>SNR</th><th>GPS</th></tr></thead><tbody id="packetRows"></tbody></table></div></div></section>
-<section id="settingsView" class="view"><div class="panel"><h3>Session and export</h3><div class="actions"><button id="csv">Export packets CSV</button><button id="trackCsv">Export track CSV</button><button id="geo">Export GeoJSON</button></div><div class="actions"><button id="disconnect" class="secondary">Disconnect BLE</button><button id="stopGps" class="secondary">Stop GPS</button><button id="newSession" class="danger">New session / clear current</button></div><p class="foot">Exports use the iOS/Android Share Sheet where supported, otherwise a browser download. Check Files after saving. Browser storage is not a substitute for exporting backups.</p></div><div class="panel"><h3>Diagnostics</h3><div class="row"><span>BLE notifications</span><b id="bleCount">0</b></div><div class="row"><span>Unlocated receptions</span><b id="noGps">0</b></div><div class="row"><span>Storage</span><b id="dbStatus">Opening...</b></div><div id="debug"></div></div></section>
-<p class="foot">Keep this page in the foreground during recording. iOS may suspend GPS and Bluetooth when the screen locks. Do not operate the app while driving; use a passenger or configure it before departure.</p></div>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+:root {
+  color-scheme: dark;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  overflow-x: hidden;
+  background: #101820;
+  color: #edf3f7;
+}
+
+header {
+  padding: 14px;
+  background: #172631;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+h1 { font-size: 19px; margin: 0; }
+h3 { margin-top: 0; }
+small, .muted { color: #9aafbd; }
+small { font-size: 11px; }
+
+.pill {
+  font-size: 11px;
+  border: 1px solid #435764;
+  border-radius: 20px;
+  padding: 6px 9px;
+  white-space: nowrap;
+}
+
+.wrap {
+  max-width: 950px;
+  margin: auto;
+  padding: 10px 10px 80px;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 7px;
+  margin-bottom: 10px;
+}
+
+.stat, .panel {
+  background: #1c2b36;
+  border: 1px solid #344956;
+  border-radius: 12px;
+}
+
+.stat {
+  padding: 10px 5px;
+  text-align: center;
+  min-width: 0;
+}
+
+.stat b {
+  display: block;
+  font-size: 17px;
+  overflow-wrap: anywhere;
+}
+
+.stat small { display: block; }
+
+.panel {
+  padding: 12px;
+  margin: 10px 0;
+}
+
+button {
+  border: 0;
+  background: #2186c7;
+  color: white;
+  border-radius: 9px;
+  padding: 11px 12px;
+  font-weight: 650;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+button.secondary { background: #3b5362; }
+button.danger { background: #8c4050; }
+button:disabled { opacity: .45; }
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.actions button { flex: 1 1 120px; }
+
+.tabs {
+  display: flex;
+  gap: 7px;
+  margin: 10px 0;
+}
+
+.tabs button {
+  flex: 1;
+  background: #314654;
+}
+
+.tabs button.active { background: #2186c7; }
+
+.view { display: none; }
+.view.active { display: block; }
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid #354956;
+  font-size: 13px;
+}
+
+.row:last-child { border: 0; }
+
+.row b {
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+}
+
+td, th {
+  padding: 9px 5px;
+  border-bottom: 1px solid #344956;
+  text-align: left;
+}
+
+th { color: #9aafbd; }
+.scroll { overflow: auto; }
+
+#debug {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 180px;
+  overflow: auto;
+  font: 11px monospace;
+  color: #b6cbd8;
+}
+
+.foot {
+  font-size: 11px;
+  color: #9aafbd;
+  margin-top: 12px;
+}
+
+.ok { color: #69e3a1; }
+.warn { color: #f1c078; }
+.bad { color: #ff9393; }
+
+/* MAP FIX: constrained map container */
+#map {
+  position: relative !important;
+  display: block;
+  width: 100%;
+  height: 55dvh;
+  min-height: 350px;
+  max-height: 650px;
+  overflow: hidden !important;
+  border-radius: 12px;
+  background: #263943;
+  isolation: isolate;
+  z-index: 0;
+}
+
+/* Leaflet fallback positioning for Bluefy */
+.leaflet-container {
+  position: relative;
+  overflow: hidden;
+  background: #263943;
+  outline: 0;
+}
+
+.leaflet-pane,
+.leaflet-map-pane,
+.leaflet-tile-pane,
+.leaflet-overlay-pane,
+.leaflet-shadow-pane,
+.leaflet-marker-pane,
+.leaflet-tooltip-pane,
+.leaflet-popup-pane,
+.leaflet-tile-container,
+.leaflet-tile,
+.leaflet-marker-icon,
+.leaflet-marker-shadow {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+.leaflet-tile,
+.leaflet-marker-icon,
+.leaflet-marker-shadow {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.leaflet-tile {
+  max-width: none !important;
+  max-height: none !important;
+  visibility: inherit;
+}
+
+.leaflet-container img {
+  max-width: none !important;
+}
+
+.leaflet-container .leaflet-control-container {
+  position: relative;
+  z-index: 1000;
+}
+
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+  background: #1c2b36;
+  color: white;
+}
+
+@media(max-width:380px) {
+  .stat b { font-size: 14px; }
+  .stat small { font-size: 10px; }
+  button { font-size: 12px; }
+}
+</style>
+</head>
+
+<body>
+
+<header>
+  <div>
+    <h1>MeshCore WarDriver</h1>
+    <small>v0.3.1 | Local coverage survey</small>
+  </div>
+  <span id="statePill" class="pill">Not recording</span>
+</header>
+
+<div class="wrap">
+
+<div class="stats">
+  <div class="stat">
+    <small>RX packets</small>
+    <b id="rxCount">0</b>
+  </div>
+  <div class="stat">
+    <small>RSSI</small>
+    <b id="rssi">--</b>
+  </div>
+  <div class="stat">
+    <small>SNR</small>
+    <b id="snr">--</b>
+  </div>
+  <div class="stat">
+    <small>GPS accuracy</small>
+    <b id="gpsAcc">--</b>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="row">
+    <span>Bluetooth</span>
+    <b id="bleStatus">Disconnected</b>
+  </div>
+  <div class="row">
+    <span>GPS</span>
+    <b id="gpsStatus">Stopped</b>
+  </div>
+  <div class="actions" style="margin-top:10px">
+    <button id="connect">Connect Wio</button>
+    <button id="reconnect" class="secondary">Reconnect</button>
+    <button id="gpsBtn">Start GPS</button>
+  </div>
+</div>
+
+<div class="tabs">
+  <button class="active" data-tab="mapView">Map</button>
+  <button data-tab="packetView">Packets</button>
+  <button data-tab="settingsView">Settings</button>
+</div>
+
+<section id="mapView" class="view active">
+
+  <div id="map"></div>
+
+  <div class="panel">
+    <div class="actions">
+      <button id="start">Start recording</button>
+      <button id="stop" class="secondary">Stop recording</button>
+      <button id="follow" class="secondary">
+        Follow GPS: On
+      </button>
+    </div>
+
+    <div class="row">
+      <span>Recorded packets</span>
+      <b id="savedPackets">0</b>
+    </div>
+    <div class="row">
+      <span>Recorded track points</span>
+      <b id="savedTrack">0</b>
+    </div>
+    <div class="row">
+      <span>Location</span>
+      <b id="coords">Waiting for GPS</b>
+    </div>
+    <div class="row">
+      <span>Session</span>
+      <b id="sessionStatus">No session</b>
+    </div>
+
+    <p class="foot">
+      Green: RSSI ≥ -90 dBm.
+      Yellow: ≥ -110 dBm.
+      Orange: ≥ -120 dBm.
+      Red: below -120 dBm.
+      These are display thresholds, not validated
+      coverage grades.
+    </p>
+  </div>
+</section>
+
+<section id="packetView" class="view">
+  <div class="panel">
+    <h3>Latest radio receptions</h3>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>RSSI</th>
+            <th>SNR</th>
+            <th>GPS</th>
+          </tr>
+        </thead>
+        <tbody id="packetRows"></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="settingsView" class="view">
+  <div class="panel">
+    <h3>Session and export</h3>
+
+    <div class="actions">
+      <button id="csv">Export packets CSV</button>
+      <button id="trackCsv">Export track CSV</button>
+      <button id="geo">Export GeoJSON</button>
+    </div>
+
+    <div class="actions">
+      <button id="disconnect" class="secondary">
+        Disconnect BLE
+      </button>
+      <button id="stopGps" class="secondary">
+        Stop GPS
+      </button>
+      <button id="newSession" class="danger">
+        New session
+      </button>
+    </div>
+
+    <p class="foot">
+      Exports use the iOS/Android Share Sheet
+      where supported, otherwise a browser download.
+      Save backups before clearing browser data.
+    </p>
+  </div>
+
+  <div class="panel">
+    <h3>Diagnostics</h3>
+    <div class="row">
+      <span>BLE notifications</span>
+      <b id="bleCount">0</b>
+    </div>
+    <div class="row">
+      <span>Unlocated receptions</span>
+      <b id="noGps">0</b>
+    </div>
+    <div class="row">
+      <span>Storage</span>
+      <b id="dbStatus">Opening...</b>
+    </div>
+    <div id="debug"></div>
+  </div>
+</section>
+
+<p class="foot">
+  Keep the page in the foreground during recording.
+  iOS may suspend Bluetooth and GPS when locked.
+  Configure before departure or have a passenger operate it.
+</p>
+
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
 <script>
-'use strict';
-const SERVICE='6e400001-b5a3-f393-e0a9-e50e24dcca9e';
-const RX='6e400003-b5a3-f393-e0a9-e50e24dcca9e';
-const $=id=>document.getElementById(id);
-const DB_NAME='meshcore-wardriver-v03';
-let db=null,device=null,rxChar=null,gpsWatch=null,fix=null,recording=false,follow=true,rxCount=0,bleCount=0,noGps=0,packetCount=0,trackCount=0,sessionId=null,lastTrackAt=0;
-let map=null,trackLine=null,positionMarker=null,packetLayer=null;
-const fixMaxAge=10000;
-function log(s){$('debug').textContent=new Date().toLocaleTimeString()+' '+s+'\n'+$('debug').textContent.slice(0,4500)}
-function signed8(v){return v>=128?v-256:v}
-function hex(bytes){return Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join(' ')}
-function color(r){return r>=-90?'#35d88a':r>=-110?'#e7cf54':r>=-120?'#f28a43':'#ef5c69'}
-function openDB(){return new Promise((resolve,reject)=>{const req=indexedDB.open(DB_NAME,1);req.onupgradeneeded=()=>{const d=req.result;const p=d.createObjectStore('packets',{keyPath:'id',autoIncrement:true});p.createIndex('session','session');const t=d.createObjectStore('track',{keyPath:'id',autoIncrement:true});t.createIndex('session','session');d.createObjectStore('meta',{keyPath:'key'})};req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error)})}
-function dbGet(store,key){return new Promise((res,rej)=>{const q=db.transaction(store).objectStore(store).get(key);q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error)})}
-function dbPut(store,obj){return new Promise((res,rej)=>{const q=db.transaction(store,'readwrite').objectStore(store).put(obj);q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error)})}
-function dbAll(store){return new Promise((res,rej)=>{const q=db.transaction(store).objectStore(store).index('session').getAll(sessionId);q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error)})}
-async function initSession(){try{db=await openDB();$('dbStatus').textContent='Ready';let current=await dbGet('meta','current');sessionId=current?.value||new Date().toISOString();if(!current)await dbPut('meta',{key:'current',value:sessionId});const [p,t]=await Promise.all([dbAll('packets'),dbAll('track')]);packetCount=p.length;trackCount=t.length;noGps=p.filter(x=>x.lat==null).length;updateCounts();t.forEach(drawTrack);p.forEach(drawPacket);p.slice(-30).forEach(addRow);$('sessionStatus').textContent=sessionId.slice(0,19).replace('T',' ');log('Loaded '+p.length+' packets and '+t.length+' GPS points')}catch(e){$('dbStatus').textContent='Unavailable';log('Storage error: '+e.message)}}
-function updateCounts(){$('savedPackets').textContent=packetCount;$('savedTrack').textContent=trackCount;$('noGps').textContent=noGps}
-function initMap(){if(typeof L==='undefined'){log('Map library failed to load');$('map').textContent='Map library unavailable; check internet connection.';return}map=L.map('map',{zoomControl:true}).setView([54.5,-2.5],6);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap contributors'}).addTo(map);packetLayer=L.layerGroup().addTo(map);trackLine=L.polyline([],{color:'#47aaff',weight:4,opacity:.85}).addTo(map)}
-function drawTrack(p){if(!map||p.lat==null)return;trackLine.addLatLng([p.lat,p.lon])}
-function drawPacket(p){if(!map||p.lat==null)return;L.circleMarker([p.lat,p.lon],{radius:5,color:color(p.rssi),fillColor:color(p.rssi),fillOpacity:.75,weight:1}).bindPopup('RSSI: '+p.rssi+' dBm<br>SNR: '+p.snr+' dB<br>'+new Date(p.timestamp).toLocaleString()).addTo(packetLayer)}
-function addRow(p){const tr=document.createElement('tr');for(const v of [new Date(p.timestamp).toLocaleTimeString(),p.rssi+' dBm',p.snr.toFixed(2)+' dB',p.lat==null?'No':'Yes']){const td=document.createElement('td');td.textContent=v;tr.appendChild(td)}$('packetRows').prepend(tr);while($('packetRows').children.length>30)$('packetRows').lastChild.remove()}
-async function connect(reuse=false){try{if(!navigator.bluetooth)throw Error('Web Bluetooth unavailable');$('bleStatus').textContent='Connecting...';if(reuse&&device){/* reuse previous selection */}else if(reuse&&navigator.bluetooth.getDevices){const devices=await navigator.bluetooth.getDevices();device=devices.find(d=>d.name&&d.name.toLowerCase().includes('mesh'))||devices[0];if(!device)throw Error('No authorised device; use Connect Wio')}else{device=await navigator.bluetooth.requestDevice({filters:[{services:[SERVICE]}]})}device.addEventListener('gattserverdisconnected',()=>{$('bleStatus').textContent='Disconnected';rxChar=null;log('BLE disconnected')});const server=await device.gatt.connect();const svc=await server.getPrimaryService(SERVICE);rxChar=await svc.getCharacteristic(RX);rxChar.addEventListener('characteristicvaluechanged',onBLE);await rxChar.startNotifications();$('bleStatus').textContent=device.name||'Connected';log('BLE notifications active')}catch(e){$('bleStatus').textContent='Failed';log('BLE: '+e.message)}}
-function onBLE(event){const v=event.target.value;const b=new Uint8Array(v.buffer,v.byteOffset,v.byteLength);bleCount++;$('bleCount').textContent=bleCount;if(b.length<4||b[0]!==0x88)return;const now=Date.now(),rssi=signed8(b[2]),snr=signed8(b[1])/4;rxCount++;$('rxCount').textContent=rxCount;$('rssi').textContent=rssi+' dBm';$('snr').textContent=snr.toFixed(2)+' dB';const valid=fix&&now-fix.timestamp>=0&&now-fix.timestamp<=fixMaxAge;const p={session:sessionId,timestamp:new Date(now).toISOString(),lat:valid?fix.lat:null,lon:valid?fix.lon:null,accuracy_m:valid?fix.accuracy:null,fix_age_ms:valid?now-fix.timestamp:null,rssi,snr,payload_hex:hex(b.slice(3))};addRow(p);if(recording)savePacket(p)}
-async function savePacket(p){if(!db){log('Cannot record: storage unavailable');stopRecord();return}try{await dbPut('packets',p);packetCount++;if(p.lat==null)noGps++;updateCounts();drawPacket(p)}catch(e){log('Packet storage error: '+e.message);stopRecord()}}
-function startGPS(){if(gpsWatch!==null)return;if(!navigator.geolocation){log('GPS unavailable');return}$('gpsStatus').textContent='Waiting...';gpsWatch=navigator.geolocation.watchPosition(async pos=>{const c=pos.coords;fix={lat:c.latitude,lon:c.longitude,accuracy:c.accuracy,speed:c.speed,timestamp:pos.timestamp};$('gpsStatus').textContent='Active';$('gpsAcc').textContent=Math.round(c.accuracy)+' m';$('coords').textContent=c.latitude.toFixed(5)+', '+c.longitude.toFixed(5);if(map){if(!positionMarker)positionMarker=L.circleMarker([fix.lat,fix.lon],{radius:8,color:'#fff',fillColor:'#2386ff',fillOpacity:1}).addTo(map);else positionMarker.setLatLng([fix.lat,fix.lon]);if(follow)map.setView([fix.lat,fix.lon],Math.max(map.getZoom(),15))}if(recording&&pos.timestamp-lastTrackAt>=900){lastTrackAt=pos.timestamp;const p={session:sessionId,timestamp:new Date(pos.timestamp).toISOString(),lat:fix.lat,lon:fix.lon,accuracy_m:fix.accuracy,speed_kmh:fix.speed==null?null:fix.speed*3.6};try{await dbPut('track',p);trackCount++;updateCounts();drawTrack(p)}catch(e){log('Track storage error: '+e.message);stopRecord()}}},e=>{$('gpsStatus').textContent='Error';log('GPS: '+e.message)},{enableHighAccuracy:true,maximumAge:1000,timeout:15000})}
-function stopGPS(){if(gpsWatch!==null)navigator.geolocation.clearWatch(gpsWatch);gpsWatch=null;fix=null;$('gpsStatus').textContent='Stopped'}
-function startRecord(){if(!db){log('Storage not ready');return}recording=true;lastTrackAt=0;$('statePill').textContent='● Recording';$('statePill').className='pill ok';log('Recording started')}
-function stopRecord(){recording=false;$('statePill').textContent='Not recording';$('statePill').className='pill';log('Recording stopped')}
-function csv(rows,fields){return [fields.join(','),...rows.map(r=>fields.map(k=>'"'+String(r[k]??'').replace(/"/g,'""')+'"').join(','))].join('\r\n')}
-async function saveFile(name,contents,mime){const file=new File([contents],name,{type:mime});if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){try{await navigator.share({files:[file],title:'MeshCore WarDriver export'});log('Share sheet opened');return}catch(e){if(e.name==='AbortError'){log('Share cancelled');return}log('Share failed: '+e.message)}}const url=URL.createObjectURL(file);const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);log('Download requested: '+name)}
-async function exportData(kind){if(!db){log('Storage unavailable');return}try{const p=await dbAll('packets'),t=await dbAll('track');const prefix='MeshCore-WarDriver-'+sessionId.replace(/[:.]/g,'-');if(kind==='packets'){if(!p.length){log('No packets to export');return}await saveFile(prefix+'-packets.csv',csv(p,['timestamp','lat','lon','accuracy_m','fix_age_ms','rssi','snr','payload_hex']),'text/csv')}else if(kind==='track'){if(!t.length){log('No GPS track to export');return}await saveFile(prefix+'-track.csv',csv(t,['timestamp','lat','lon','accuracy_m','speed_kmh']),'text/csv')}else{const features=[...t.filter(x=>x.lat!=null).map(x=>({type:'Feature',geometry:{type:'Point',coordinates:[x.lon,x.lat]},properties:{kind:'track',timestamp:x.timestamp,accuracy_m:x.accuracy_m}})),...p.filter(x=>x.lat!=null).map(x=>({type:'Feature',geometry:{type:'Point',coordinates:[x.lon,x.lat]},properties:{kind:'reception',timestamp:x.timestamp,rssi_dbm:x.rssi,snr_db:x.snr,accuracy_m:x.accuracy_m}}))];if(!features.length){log('No mapped points to export');return}await saveFile(prefix+'.geojson',JSON.stringify({type:'FeatureCollection',features}), 'application/geo+json')}}catch(e){log('Export failed: '+e.message)}}
-async function newSession(){if(!confirm('Start a new session? Existing data will remain stored, but only the new session will be shown/exported. Export your current session first.'))return;stopRecord();sessionId=new Date().toISOString();try{await dbPut('meta',{key:'current',value:sessionId});packetCount=trackCount=noGps=rxCount=0;updateCounts();$('rxCount').textContent=0;$('packetRows').textContent='';if(packetLayer)packetLayer.clearLayers();if(trackLine)trackLine.setLatLngs([]);$('sessionStatus').textContent=sessionId.slice(0,19).replace('T',' ');log('New session started')}catch(e){log('New session error: '+e.message)}}
-$('connect').onclick=()=>connect(false);$('reconnect').onclick=()=>connect(true);$('gpsBtn').onclick=startGPS;$('stopGps').onclick=stopGPS;$('disconnect').onclick=()=>{if(device?.gatt?.connected)device.gatt.disconnect()};$('start').onclick=startRecord;$('stop').onclick=stopRecord;$('follow').onclick=()=>{follow=!follow;$('follow').textContent='Follow GPS: '+(follow?'On':'Off')};$('csv').onclick=()=>exportData('packets');$('trackCsv').onclick=()=>exportData('track');$('geo').onclick=()=>exportData('geo');$('newSession').onclick=newSession;
-document.querySelectorAll('[data-tab]').forEach(btn=>btn.onclick=()=>{document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x===btn));document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id===btn.dataset.tab));if(btn.dataset.tab==='mapView'&&map)setTimeout(()=>map.invalidateSize(),80)});
-initMap();initSession();
-</script></body></html>
+"use strict";
+
+const SERVICE =
+  "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+const RX =
+  "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
+
+const $ = id => document.getElementById(id);
+
+const DB_NAME = "meshcore-wardriver-v03";
+
+let db = null;
+let device = null;
+let rxChar = null;
+let gpsWatch = null;
+let fix = null;
+
+let recording = false;
+let follow = true;
+
+let rxCount = 0;
+let bleCount = 0;
+let noGps = 0;
+let packetCount = 0;
+let trackCount = 0;
+
+let sessionId = null;
+let lastTrackAt = 0;
+
+let map = null;
+let trackLine = null;
+let positionMarker = null;
+let packetLayer = null;
+
+const fixMaxAge = 10000;
+
+function log(message) {
+  const box = $("debug");
+  box.textContent =
+    new Date().toLocaleTimeString() +
+    " " + message + "\n" +
+    box.textContent.slice(0, 4500);
+}
+
+function signed8(value) {
+  return value >= 128 ? value - 256 : value;
+}
+
+function hex(bytes) {
+  return Array.from(
+    bytes,
+    b => b.toString(16).padStart(2, "0")
+  ).join(" ");
+}
+
+function color(rssi) {
+  return rssi >= -90 ? "#35d88a" :
+         rssi >= -110 ? "#e7cf54" :
+         rssi >= -120 ? "#f28a43" :
+         "#ef5c69";
+}
+
+/* IndexedDB */
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+
+    req.onupgradeneeded = () => {
+      const d = req.result;
+
+      const p = d.createObjectStore(
+        "packets",
+        { keyPath: "id", autoIncrement: true }
+      );
+      p.createIndex("session", "session");
+
+      const t = d.createObjectStore(
+        "track",
+        { keyPath: "id", autoIncrement: true }
+      );
+      t.createIndex("session", "session");
+
+      d.createObjectStore(
+        "meta",
+        { keyPath: "key" }
+      );
+    };
+
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function dbGet(store, key) {
+  return new Promise((resolve, reject) => {
+    const q = db.transaction(store)
+      .objectStore(store).get(key);
+
+    q.onsuccess = () => resolve(q.result);
+    q.onerror = () => reject(q.error);
+  });
+}
+
+function dbPut(store, obj) {
+  return new Promise((resolve, reject) => {
+    const q = db.transaction(store, "readwrite")
+      .objectStore(store).put(obj);
+
+    q.onsuccess = () => resolve(q.result);
+    q.onerror = () => reject(q.error);
+  });
+}
+
+function dbAll(store) {
+  return new Promise((resolve, reject) => {
+    const q = db.transaction(store)
+      .objectStore(store)
+      .index("session")
+      .getAll(sessionId);
+
+    q.onsuccess = () => resolve(q.result);
+    q.onerror = () => reject(q.error);
+  });
+}
+
+async function initSession() {
+  try {
+    db = await openDB();
+    $("dbStatus").textContent = "Ready";
+
+    const current = await dbGet("meta", "current");
+
+    sessionId = current?.value ||
+      new Date().toISOString();
+
+    if (!current) {
+      await dbPut("meta", {
+        key: "current",
+        value: sessionId
+      });
+    }
+
+    const [packets, track] = await Promise.all([
+      dbAll("packets"),
+      dbAll("track")
+    ]);
+
+    packetCount = packets.length;
+    trackCount = track.length;
+
+    noGps = packets.filter(p => p.lat == null).length;
+
+    updateCounts();
+
+    track.forEach(drawTrack);
+    packets.forEach(drawPacket);
+    packets.slice(-30).forEach(addRow);
+
+    $("sessionStatus").textContent =
+      sessionId.slice(0, 19).replace("T", " ");
+
+    log("Loaded " + packets.length +
+        " packets and " + track.length + " GPS points");
+
+  } catch (error) {
+    $("dbStatus").textContent = "Unavailable";
+    log("Storage error: " + error.message);
+  }
+}
+
+function updateCounts() {
+  $("savedPackets").textContent = packetCount;
+  $("savedTrack").textContent = trackCount;
+  $("noGps").textContent = noGps;
+}
+
+/* Leaflet map */
+
+function initMap() {
+  if (typeof L === "undefined") {
+    $("map").textContent =
+      "Map library unavailable. Check internet connection.";
+    log("Leaflet failed to load");
+    return;
+  }
+
+  if (map) return;
+
+  map = L.map("map", {
+    zoomControl: true,
+    preferCanvas: true
+  }).setView([54.5, -2.5], 6);
+
+  L.tileLayer(
+    "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    {
+      maxZoom: 19,
+      attribution: "© OpenStreetMap contributors"
+    }
+  ).addTo(map);
+
+  packetLayer = L.layerGroup().addTo(map);
+
+  trackLine = L.polyline([], {
+    color: "#47aaff",
+    weight: 4,
+    opacity: 0.85
+  }).addTo(map);
+
+  // Recalculate after the mobile layout settles.
+  requestAnimationFrame(() => {
+    map.invalidateSize();
+  });
+
+  setTimeout(() => {
+    map.invalidateSize(true);
+  }, 350);
+
+  setTimeout(() => {
+    map.invalidateSize(true);
+  }, 1000);
+
+  // Keep Leaflet aligned after viewport changes.
+  window.addEventListener("resize", () => {
+    if (map) map.invalidateSize();
+  });
+}
+
+function drawTrack(point) {
+  if (!map || point.lat == null) return;
+
+  trackLine.addLatLng([
+    point.lat,
+    point.lon
+  ]);
+}
+
+function drawPacket(point) {
+  if (!map || point.lat == null) return;
+
+  L.circleMarker(
+    [point.lat, point.lon],
+    {
+      radius: 5,
+      color: color(point.rssi),
+      fillColor: color(point.rssi),
+      fillOpacity: 0.75,
+      weight: 1
+    }
+  )
+  .bindPopup(
+    "RSSI: " + point.rssi + " dBm" +
+    "<br>SNR: " + point.snr + " dB" +
+    "<br>" +
+    new Date(point.timestamp).toLocaleString()
+  )
+  .addTo(packetLayer);
+}
+
+function addRow(point) {
+  const tr = document.createElement("tr");
+
+  const values = [
+    new Date(point.timestamp).toLocaleTimeString(),
+    point.rssi + " dBm",
+    point.snr.toFixed(2) + " dB",
+    point.lat == null ? "No" : "Yes"
+  ];
+
+  for (const value of values) {
+    const td = document.createElement("td");
+    td.textContent = value;
+    tr.appendChild(td);
+  }
+
+  $("packetRows").prepend(tr);
+
+  while ($("packetRows").children.length > 30) {
+    $("packetRows").lastElementChild.remove();
+  }
+}
+
+/* Bluetooth */
+
+async function connect(reuse = false) {
+  try {
+    if (!navigator.bluetooth) {
+      throw new Error("Web Bluetooth unavailable");
+    }
+
+    $("bleStatus").textContent = "Connecting...";
+
+    if (reuse && device) {
+      // Reuse selected device.
+    } else if (
+      reuse &&
+      typeof navigator.bluetooth.getDevices === "function"
+    ) {
+      const devices = await navigator.bluetooth.getDevices();
+
+      device = devices.find(
+        d => d.name &&
+        d.name.toLowerCase().includes("mesh")
+      ) || devices[0];
+
+      if (!device) {
+        throw new Error(
+          "No authorised device. Use Connect Wio."
+        );
+      }
+    } else {
+      device = await navigator.bluetooth.requestDevice({
+        filters: [{ services: [SERVICE] }]
+      });
+    }
+
+    if (!device.gatt.connected) {
+      const server = await device.gatt.connect();
+      const svc = await server.getPrimaryService(SERVICE);
+
+      rxChar = await svc.getCharacteristic(RX);
+    } else if (!rxChar) {
+      const svc = await device.gatt
+        .getPrimaryService(SERVICE);
+
+      rxChar = await svc.getCharacteristic(RX);
+    }
+
+    rxChar.removeEventListener(
+      "characteristicvaluechanged",
+      onBLE
+    );
+
+    rxChar.addEventListener(
+      "characteristicvaluechanged",
+      onBLE
+    );
+
+    device.removeEventListener(
+      "gattserverdisconnected",
+      onDisconnect
+    );
+
+    device.addEventListener(
+      "gattserverdisconnected",
+      onDisconnect
+    );
+
+    await rxChar.startNotifications();
+
+    $("bleStatus").textContent =
+      device.name || "Connected";
+
+    log("BLE notifications active");
+
+  } catch (error) {
+    $("bleStatus").textContent = "Failed";
+    log("BLE: " + error.message);
+  }
+}
+
+function onDisconnect() {
+  $("bleStatus").textContent = "Disconnected";
+  rxChar = null;
+  log("BLE disconnected");
+}
+
+function onBLE(event) {
+  const v = event.target.value;
+
+  const bytes = new Uint8Array(
+    v.buffer,
+    v.byteOffset,
+    v.byteLength
+  );
+
+  bleCount++;
+  $("bleCount").textContent = bleCount;
+
+  // Only process MeshCore 0x88 radio events.
+  if (bytes.length < 4 || bytes[0] !== 0x88) {
+    return;
+  }
+
+  const now = Date.now();
+  const rssi = signed8(bytes[2]);
+  const snr = signed8(bytes[1]) / 4;
+
+  rxCount++;
+
+  $("rxCount").textContent = rxCount;
+  $("rssi").textContent = rssi + " dBm";
+  $("snr").textContent = snr.toFixed(2) + " dB";
+
+  const valid = fix &&
+    now - fix.timestamp >= 0 &&
+    now - fix.timestamp <= fixMaxAge;
+
+  const point = {
+    session: sessionId,
+    timestamp: new Date(now).toISOString(),
+    lat: valid ? fix.lat : null,
+    lon: valid ? fix.lon : null,
+    accuracy_m: valid ? fix.accuracy : null,
+    fix_age_ms: valid ? now - fix.timestamp : null,
+    rssi,
+    snr,
+    payload_hex: hex(bytes.slice(3))
+  };
+
+  addRow(point);
+
+  if (recording) {
+    savePacket(point);
+  }
+}
+
+async function savePacket(point) {
+  if (!db) {
+    log("Storage unavailable");
+    stopRecord();
+    return;
+  }
+
+  try {
+    await dbPut("packets", point);
+
+    packetCount++;
+
+    if (point.lat == null) noGps++;
+
+    updateCounts();
+    drawPacket(point);
+
+  } catch (error) {
+    log("Packet storage error: " + error.message);
+    stopRecord();
+  }
+}
+
+/* GPS */
+
+function startGPS() {
+  if (gpsWatch !== null) return;
+
+  if (!navigator.geolocation) {
+    log("GPS unavailable");
+    return;
+  }
+
+  $("gpsStatus").textContent = "Waiting...";
+
+  gpsWatch = navigator.geolocation.watchPosition(
+    async position => {
+      const c = position.coords;
+
+      fix = {
+        lat: c.latitude,
+        lon: c.longitude,
+        accuracy: c.accuracy,
+        speed: c.speed,
+        timestamp: position.timestamp
+      };
+
+      $("gpsStatus").textContent = "Active";
+      $("gpsAcc").textContent =
+        Math.round(c.accuracy) + " m";
+
+      $("coords").textContent =
+        c.latitude.toFixed(5) + ", " +
+        c.longitude.toFixed(5);
+
+      if (map) {
+        const coordinates = [fix.lat, fix.lon];
+
+        if (!positionMarker) {
+          positionMarker = L.circleMarker(
+            coordinates,
+            {
+              radius: 8,
+              color: "#ffffff",
+              fillColor: "#2386ff",
+              fillOpacity: 1,
+              weight: 2
+            }
+          ).addTo(map);
+        } else {
+          positionMarker.setLatLng(coordinates);
+        }
+
+        if (follow) {
+          map.setView(
+            coordinates,
+            Math.max(map.getZoom(), 15)
+          );
+        }
+      }
+
+      if (
+        recording &&
+        position.timestamp - lastTrackAt >= 900
+      ) {
+        lastTrackAt = position.timestamp;
+
+        const point = {
+          session: sessionId,
+          timestamp:
+            new Date(position.timestamp).toISOString(),
+          lat: fix.lat,
+          lon: fix.lon,
+          accuracy_m: fix.accuracy,
+          speed_kmh:
+            fix.speed == null ? null : fix.speed * 3.6
+        };
+
+        try {
+          await dbPut("track", point);
+          trackCount++;
+          updateCounts();
+          drawTrack(point);
+
+        } catch (error) {
+          log("Track storage error: " + error.message);
+          stopRecord();
+        }
+      }
+    },
+    error => {
+      $("gpsStatus").textContent = "Error";
+      log("GPS: " + error.message);
+    },
+    {
+      enableHighAccuracy: true,
+      maximumAge: 1000,
+      timeout: 15000
+    }
+  );
+}
+
+function stopGPS() {
+  if (gpsWatch !== null) {
+    navigator.geolocation.clearWatch(gpsWatch);
+  }
+
+  gpsWatch = null;
+  fix = null;
+
+  $("gpsStatus").textContent = "Stopped";
+}
+
+/* Recording */
+
+function startRecord() {
+  if (!db) {
+    log("Storage not ready");
+    return;
+  }
+
+  recording = true;
+  lastTrackAt = 0;
+
+  $("statePill").textContent = "Recording";
+  $("statePill").className = "pill ok";
+
+  log("Recording started");
+}
+
+function stopRecord() {
+  recording = false;
+
+  $("statePill").textContent = "Not recording";
+  $("statePill").className = "pill";
+
+  log("Recording stopped");
+}
+
+/* Export */
+
+function csv(rows, fields) {
+  return [
+    fields.join(","),
+    ...rows.map(row =>
+      fields.map(key =>
+        '"' +
+        String(row[key] ?? "").replace(/"/g, '""') +
+        '"'
+      ).join(",")
+    )
+  ].join("\r\n");
+}
+
+async function saveFile(name, contents, mime) {
+  const file = new File(
+    [contents],
+    name,
+    { type: mime }
+  );
+
+  if (
+    navigator.share &&
+    navigator.canShare &&
+    navigator.canShare({ files: [file] })
+  ) {
+    try {
+      await navigator.share({
+        files: [file],
+        title: "MeshCore WarDriver export"
+      });
+
+      log("Share sheet opened");
+      return;
+
+    } catch (error) {
+      if (error.name === "AbortError") {
+        log("Share cancelled");
+        return;
+      }
+
+      log("Share failed: " + error.message);
+    }
+  }
+
+  const url = URL.createObjectURL(file);
+  const a = document.createElement("a");
+
+  a.href = url;
+  a.download = name;
+
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
+  setTimeout(() => {
+    URL.revokeObjectURL(url);
+  }, 60000);
+
+  log("Download requested: " + name);
+}
+
+async function exportData(kind) {
+  if (!db) {
+    log("Storage unavailable");
+    return;
+  }
+
+  try {
+    const packets = await dbAll("packets");
+    const track = await dbAll("track");
+
+    const prefix =
+      "MeshCore-WarDriver-" +
+      sessionId.replace(/[:.]/g, "-");
+
+    if (kind === "packets") {
+      if (!packets.length) {
+        log("No packets to export");
+        return;
+      }
+
+      await saveFile(
+        prefix + "-packets.csv",
+        csv(packets, [
+          "timestamp",
+          "lat",
+          "lon",
+          "accuracy_m",
+          "fix_age_ms",
+          "rssi",
+          "snr",
+          "payload_hex"
+        ]),
+        "text/csv"
+      );
+
+    } else if (kind === "track") {
+      if (!track.length) {
+        log("No GPS track to export");
+        return;
+      }
+
+      await saveFile(
+        prefix + "-track.csv",
+        csv(track, [
+          "timestamp",
+          "lat",
+          "lon",
+          "accuracy_m",
+          "speed_kmh"
+        ]),
+        "text/csv"
+      );
+
+    } else {
+      const features = [
+        ...track.filter(p => p.lat != null).map(p => ({
+          type: "Feature",
+          geometry: {
+            type: "Point",
+            coordinates: [p.lon, p.lat]
+          },
+          properties: {
+            kind: "track",
+            timestamp: p.timestamp,
+            accuracy_m: p.accuracy_m
+          }
+        })),
+
+        ...packets.filter(p => p.lat != null).map(p => ({
+          type: "Feature",
+          geometry: {
+            type: "Point",
+            coordinates: [p.lon, p.lat]
+          },
+          properties: {
+            kind: "reception",
+            timestamp: p.timestamp,
+            rssi_dbm: p.rssi,
+            snr_db: p.snr,
+            accuracy_m: p.accuracy_m
+          }
+        }))
+      ];
+
+      if (!features.length) {
+        log("No mapped points to export");
+        return;
+      }
+
+      await saveFile(
+        prefix + ".geojson",
+        JSON.stringify({
+          type: "FeatureCollection",
+          features
+        }),
+        "application/geo+json"
+      );
+    }
+
+  } catch (error) {
+    log("Export failed: " + error.message);
+  }
+}
+
+/* New session */
+
+async function newSession() {
+  const message =
+    "Start a new session?\n\n" +
+    "Existing data will remain stored, but only " +
+    "the new session will be shown and exported.\n\n" +
+    "Export your current session first.";
+
+  if (!confirm(message)) return;
+
+  stopRecord();
+
+  const nextSessionId = new Date().toISOString();
+
+  try {
+    await dbPut("meta", {
+      key: "current",
+      value: nextSessionId
+    });
+
+    sessionId = nextSessionId;
+
+    packetCount = 0;
+    trackCount = 0;
+    noGps = 0;
+    rxCount = 0;
+    lastTrackAt = 0;
+
+    updateCounts();
+
+    $("rxCount").textContent = "0";
+    $("packetRows").textContent = "";
+
+    if (packetLayer) packetLayer.clearLayers();
+    if (trackLine) trackLine.setLatLngs([]);
+
+    $("sessionStatus").textContent =
+      sessionId.slice(0, 19).replace("T", " ");
+
+    log("New session started");
+
+  } catch (error) {
+    log("New session error: " + error.message);
+  }
+}
+
+/* Buttons */
+
+$("connect").onclick = () => connect(false);
+$("reconnect").onclick = () => connect(true);
+
+$("gpsBtn").onclick = startGPS;
+$("stopGps").onclick = stopGPS;
+
+$("disconnect").onclick = () => {
+  if (device?.gatt?.connected) {
+    device.gatt.disconnect();
+  }
+};
+
+$("start").onclick = startRecord;
+$("stop").onclick = stopRecord;
+
+$("follow").onclick = () => {
+  follow = !follow;
+
+  $("follow").textContent =
+    "Follow GPS: " + (follow ? "On" : "Off");
+
+  if (follow && fix && map) {
+    map.setView(
+      [fix.lat, fix.lon],
+      Math.max(map.getZoom(), 15)
+    );
+  }
+};
+
+$("csv").onclick = () => exportData("packets");
+$("trackCsv").onclick = () => exportData("track");
+$("geo").onclick = () => exportData("geo");
+
+$("newSession").onclick = newSession;
+
+/* Tabs */
+
+document.querySelectorAll("[data-tab]").forEach(
+  button => {
+    button.onclick = () => {
+      document.querySelectorAll("[data-tab]")
+        .forEach(b => {
+          b.classList.toggle(
+            "active",
+            b === button
+          );
+        });
+
+      document.querySelectorAll(".view")
+        .forEach(view => {
+          view.classList.toggle(
+            "active",
+            view.id === button.dataset.tab
+          );
+        });
+
+      if (
+        button.dataset.tab === "mapView" &&
+        map
+      ) {
+        requestAnimationFrame(() => {
+          map.invalidateSize(true);
+        });
+
+        setTimeout(() => {
+          map.invalidateSize(true);
+        }, 200);
+      }
+    };
+  }
+);
+
+/* Initialise */
+
+initMap();
+initSession();
+
+</script>
+</body>
+</html>
