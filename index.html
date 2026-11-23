@@ -5,7 +5,7 @@
 <meta name="viewport"
  content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#101820">
-<title>MeshCore WarDriver v0.6</title>
+<title>MeshCore WarDriver v0.7</title>
 
 <!-- Leaflet CSS: load before application styles -->
 <link rel="stylesheet"
@@ -281,6 +281,8 @@ button { padding:8px 7px; font-size:12px; }
 .heardItem { display:flex; justify-content:space-between; gap:8px; font-size:12px; white-space:nowrap; }
 .heardItem span:first-child { overflow:hidden; text-overflow:ellipsis; }
 #heardNote { color:#9aafbd; font-size:10px; }
+#repeaterInfo { font-size:11px; color:#9aafbd; margin:3px 0; }
+#repeaterImport { width:100%; max-width:100%; font-size:12px; }
 @media(max-height:650px) { #heardList .heardItem:nth-child(n+3) { display:none; } header h1 {font-size:16px} }
 </style>
 </head>
@@ -290,7 +292,7 @@ button { padding:8px 7px; font-size:12px; }
 <header>
   <div>
     <h1>MeshCore WarDriver</h1>
-    <small>v0.6 | Local coverage + sync</small>
+    <small>v0.7 | Repeater map + sync</small>
   </div>
   <span id="statePill" class="pill">Not recording</span>
 </header>
@@ -343,9 +345,9 @@ button { padding:8px 7px; font-size:12px; }
 
   <div id="syncBadge">Sync: not configured</div>
   <div id="heardPanel">
-    <div class="heardTitle">Recent advertised nodes <span id="nodeCount" class="muted">0</span></div>
+    <div class="heardTitle">Repeaters heard <span id="nodeCount" class="muted">0</span> <span id="directoryCount" class="muted"></span></div>
     <div id="heardList"><div class="heardItem muted">Waiting for advertisements...</div></div>
-    <div id="heardNote">Names/types require verified advert decoding. Unknown packets remain unattributed.</div>
+    <div id="heardNote">Blue outlines = known repeater locations; coloured dots = recorded RF receptions. Directory markers are not evidence of reception.</div>
   </div>
 
   <div class="panel">
@@ -413,6 +415,13 @@ button { padding:8px 7px; font-size:12px; }
       <button id="trackCsv">Export track CSV</button>
       <button id="geo">Export GeoJSON</button>
     </div>
+
+    <h3>Repeater directory (local only)</h3>
+    <p class="foot">Import the MeshCore discovered contacts JSON. Only type 2 repeaters are retained; other contacts are discarded. The directory is saved on this phone, not uploaded to the server.</p>
+    <input id="repeaterImport" type="file" accept=".json,application/json">
+    <div class="row"><span>Saved repeaters</span><b id="repeaterSaved">0</b></div>
+    <div class="actions"><button id="toggleRepeaters" class="secondary">Hide repeater locations</button><button id="clearRepeaters" class="secondary">Clear directory</button></div>
+    <p id="repeaterInfo">Import a library to show nearby repeaters.</p>
 
     <h3>Map server synchronisation</h3>
     <label for="serverUrl">Server HTTPS URL</label>
@@ -508,6 +517,11 @@ let trackLine = null;
 let positionMarker = null;
 let packetLayer = null;
 const nodeDirectory = new Map();
+const repeaterDirectory = new Map();
+let repeaterLayer = null;
+let showRepeaters = true;
+const REPEATER_RADIUS_KM = 50;
+
 const recentRadio = [];
 const MAX_RECENT_RADIO = 30;
 
@@ -632,6 +646,10 @@ async function initSession() {
     noGps = packets.filter(p => p.lat == null).length;
 
     updateCounts();
+    const savedDirectory = await dbGet("meta", "repeater_directory");
+    if (Array.isArray(savedDirectory?.value)) {
+      installRepeaterDirectory(savedDirectory.value);
+    }
     await refreshPending();
 
     track.forEach(drawTrack);
@@ -682,6 +700,8 @@ function initMap() {
   ).addTo(map);
 
   packetLayer = L.layerGroup().addTo(map);
+  repeaterLayer = L.layerGroup().addTo(map);
+  map.on("moveend", renderRepeaterMarkers);
 
   trackLine = L.polyline([], {
     color: "#47aaff",
@@ -717,33 +737,88 @@ function drawTrack(point) {
   ]);
 }
 
+function distanceKm(lat1, lon1, lat2, lon2) {
+  const rad = Math.PI / 180;
+  const dlat = (lat2 - lat1) * rad;
+  const dlon = (lon2 - lon1) * rad;
+  const a = Math.sin(dlat/2)**2 + Math.cos(lat1*rad) *
+    Math.cos(lat2*rad) * Math.sin(dlon/2)**2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function installRepeaterDirectory(entries) {
+  repeaterDirectory.clear();
+  for (const e of entries) {
+    if (Number(e.type) !== 2) continue;
+    const key = String(e.public_key || "").toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(key)) continue;
+    const lat = Number(e.latitude), lon = Number(e.longitude);
+    repeaterDirectory.set(key, {
+      key, name: String(e.name || "Unnamed repeater").slice(0,100),
+      lat: Number.isFinite(lat) && Math.abs(lat) <= 90 ? lat : null,
+      lon: Number.isFinite(lon) && Math.abs(lon) <= 180 ? lon : null,
+      type: 2
+    });
+  }
+  $("repeaterSaved").textContent = String(repeaterDirectory.size);
+  $("directoryCount").textContent = `· ${repeaterDirectory.size} saved`;
+  renderNodes();
+  renderRepeaterMarkers();
+}
+
+function renderRepeaterMarkers() {
+  if (!map || !repeaterLayer) return;
+  repeaterLayer.clearLayers();
+  if (!showRepeaters) return;
+  const centre = fix ? [fix.lat, fix.lon] : [map.getCenter().lat, map.getCenter().lng];
+  let shown = 0;
+  for (const r of repeaterDirectory.values()) {
+    if (r.lat == null || r.lon == null || (r.lat === 0 && r.lon === 0)) continue;
+    if (distanceKm(centre[0], centre[1], r.lat, r.lon) > REPEATER_RADIUS_KM) continue;
+    const marker = L.circleMarker([r.lat, r.lon], {
+      radius: 6, color: "#54baff", weight: 2,
+      fillColor: "#142c45", fillOpacity: .35
+    });
+    const popup = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = r.name;
+    const details = document.createElement("div");
+    details.textContent = `Known repeater location (not necessarily heard). Key: ${r.key.slice(0,16)}...`;
+    popup.append(title, details);
+    marker.bindPopup(popup).addTo(repeaterLayer);
+    shown++;
+  }
+  $("repeaterInfo").textContent = `${shown} repeaters shown within ${REPEATER_RADIUS_KM} km of ${fix ? "GPS" : "map centre"}.`;
+}
+
 function renderNodes() {
   const entries = [...nodeDirectory.values()].sort((a,b)=>b.lastSeen-a.lastSeen);
   $("nodeCount").textContent = String(entries.length);
   const list = $("heardList");
   list.textContent = "";
   if (!entries.length) {
-    const el=document.createElement("div");
-    el.className="heardItem muted";
-    el.textContent="No advertisements detected yet";
+    const el = document.createElement("div");
+    el.className = "heardItem muted";
+    el.textContent = "No identifiable repeater adverts received yet";
     list.appendChild(el);
   }
-  entries.slice(0,3).forEach(node=>{
-    const el=document.createElement("div"); el.className="heardItem";
-    const name=document.createElement("span"); name.textContent="Key " + node.key.slice(0,12) + "...";
-    const val=document.createElement("span");
-    val.textContent=node.rssi == null ? "advert heard" : node.rssi+" dBm";
+  entries.slice(0,3).forEach(node => {
+    const el = document.createElement("div"); el.className = "heardItem";
+    const name = document.createElement("span");
+    name.textContent = repeaterDirectory.get(node.key)?.name || "Key " + node.key.slice(0,12) + "...";
+    const val = document.createElement("span");
+    val.textContent = node.rssi == null ? "advert heard" : node.rssi + " dBm";
     el.append(name,val); list.appendChild(el);
   });
 }
 function observeAdvert(bytes) {
-  if(bytes.length < 33) return;
-  const key=hex(bytes.slice(1,33)).replaceAll(" ","");
-  const now=Date.now();
-  // A companion 0x80 notification confirms an advertised public key,
-  // but does not itself carry RF metrics or establish node type.
-  let matched=null;
-  for (let i=recentRadio.length-1;i>=0;i--) {
+  if (bytes.length < 33) return;
+  const key = hex(bytes.slice(1,33)).replaceAll(" ", "").toLowerCase();
+  // Only type-2 repeaters from the imported directory are shown.
+  if (!repeaterDirectory.has(key)) return;
+  const now = Date.now();
+  let matched = null;
+  for (let i=recentRadio.length-1; i>=0; i--) {
     const p=recentRadio[i];
     if(now-p.time>3000) continue;
     if(p.hex.includes(key)) { matched=p; break; }
@@ -773,7 +848,7 @@ function drawPacket(point) {
   .bindPopup(
     "RSSI: " + point.rssi + " dBm" +
     "<br>SNR: " + point.snr + " dB" +
-    "<br>Node: " + (point.node_key ? "advert " + point.node_key.slice(0,12) : "unattributed") +
+    "<br>Node: " + (point.node_key ? (repeaterDirectory.get(point.node_key)?.name || point.node_key.slice(0,12)) : "unattributed") +
     "<br>" +
     new Date(point.timestamp).toLocaleString()
   )
@@ -788,7 +863,7 @@ function addRow(point) {
     point.rssi + " dBm",
     point.snr.toFixed(2) + " dB",
     point.lat == null ? "No" : "Yes",
-    point.node_key ? point.node_key.slice(0,10) : "Unknown"
+    point.node_key ? (repeaterDirectory.get(point.node_key)?.name || point.node_key.slice(0,10)) : "Unknown"
   ];
 
   for (const value of values) {
@@ -933,7 +1008,7 @@ function onBLE(event) {
   // Only attach an identity when a full advertised public key is present
   // in the received raw packet. This does NOT establish the immediate
   // transmitting repeater for arbitrary forwarded traffic.
-  const known = [...nodeDirectory.keys()].find(key => payloadHex.includes(key));
+  const known = [...repeaterDirectory.keys()].find(key => payloadHex.includes(key));
   const valid = fix &&
     now - fix.timestamp >= 0 &&
     now - fix.timestamp <= fixMaxAge;
@@ -948,7 +1023,7 @@ function onBLE(event) {
     rssi,
     snr,
     node_key: known || null,
-    identity_basis: known ? "advert_public_key_in_payload" : "unknown",
+    identity_basis: known ? "repeater_public_key_in_payload" : "unknown",
     payload_hex: hex(bytes.slice(3))
   };
 
@@ -1032,6 +1107,11 @@ function startGPS() {
           positionMarker.setLatLng(coordinates);
         }
 
+        if (repeaterDirectory.size &&
+            (!window.lastRepeaterRefresh || Date.now()-window.lastRepeaterRefresh>15000)) {
+          window.lastRepeaterRefresh=Date.now();
+          renderRepeaterMarkers();
+        }
         if (follow) {
           map.setView(
             coordinates,
@@ -1526,6 +1606,38 @@ $("trackCsv").onclick = () => exportData("track");
 $("geo").onclick = () => exportData("geo");
 
 $("newSession").onclick = newSession;
+$("repeaterImport").onchange = async event => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  try {
+    if (file.size > 15 * 1024 * 1024) throw new Error("File exceeds 15 MB");
+    const data = JSON.parse(await file.text());
+    if (!Array.isArray(data.discovered_contacts))
+      throw new Error("Expected discovered_contacts array");
+    const repeaters = data.discovered_contacts.filter(e => Number(e.type) === 2);
+    installRepeaterDirectory(repeaters);
+    await dbPut("meta", {key:"repeater_directory", value:[...repeaterDirectory.values()].map(r => ({
+      type:2, name:r.name, public_key:r.key, latitude:r.lat, longitude:r.lon
+    }))});
+    log(`Imported ${repeaterDirectory.size} repeaters; other contacts excluded`);
+  } catch (error) {
+    log("Repeater import failed: " + error.message);
+    alert("Import failed: " + error.message);
+  }
+  event.target.value = "";
+};
+$("toggleRepeaters").onclick = () => {
+  showRepeaters = !showRepeaters;
+  $("toggleRepeaters").textContent = showRepeaters ? "Hide repeater locations" : "Show repeater locations";
+  renderRepeaterMarkers();
+};
+$("clearRepeaters").onclick = async () => {
+  if (!confirm("Remove the saved repeater directory from this browser?")) return;
+  await dbPut("meta", {key:"repeater_directory", value:[]});
+  nodeDirectory.clear();
+  installRepeaterDirectory([]);
+  log("Repeater directory cleared");
+};
 $("serverUrl").value=syncUrl;
 $("serverUrl").addEventListener("change",()=>{
   syncUrl=$("serverUrl").value.trim();
