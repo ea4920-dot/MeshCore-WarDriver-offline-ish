@@ -5,7 +5,7 @@
 <meta name="viewport"
  content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#101820">
-<title>MeshCore WarDriver v0.5.1</title>
+<title>MeshCore WarDriver v0.6</title>
 
 <!-- Leaflet CSS: load before application styles -->
 <link rel="stylesheet"
@@ -103,6 +103,10 @@ button.danger { background: #bd3548; }
 button.active-stop { background: #bd3548; color: white; }
 button.active-on { background: #197c55; color: white; }
 button:disabled { opacity: .45; }
+input[type="url"] { width:100%;padding:10px;border:1px solid #435764;
+  border-radius:8px;background:#101820;color:white;margin:6px 0 8px; }
+#syncBadge { font-size:10px;color:#9aafbd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+
 
 .actions {
   display: flex;
@@ -286,7 +290,7 @@ button { padding:8px 7px; font-size:12px; }
 <header>
   <div>
     <h1>MeshCore WarDriver</h1>
-    <small>v0.5.1 | Local coverage survey</small>
+    <small>v0.6 | Local coverage + sync</small>
   </div>
   <span id="statePill" class="pill">Not recording</span>
 </header>
@@ -337,6 +341,7 @@ button { padding:8px 7px; font-size:12px; }
 
   <div id="map"></div>
 
+  <div id="syncBadge">Sync: not configured</div>
   <div id="heardPanel">
     <div class="heardTitle">Recent advertised nodes <span id="nodeCount" class="muted">0</span></div>
     <div id="heardList"><div class="heardItem muted">Waiting for advertisements...</div></div>
@@ -409,6 +414,16 @@ button { padding:8px 7px; font-size:12px; }
       <button id="geo">Export GeoJSON</button>
     </div>
 
+    <h3>Map server synchronisation</h3>
+    <label for="serverUrl">Server HTTPS URL</label>
+    <input id="serverUrl" type="url" autocomplete="url" placeholder="https://example.trycloudflare.com">
+    <p class="foot">Upload token is kept in this browser tab's session storage, not in GitHub.</p>
+    <div class="actions">
+      <button id="setToken" class="secondary">Enter upload token</button>
+      <button id="retrySync">Retry pending uploads</button>
+    </div>
+    <div class="row"><span>Sync status</span><b id="syncStatus">Not configured</b></div>
+    <div class="row"><span>Pending sessions</span><b id="pendingCount">0</b></div>
     <div class="actions">
       <button id="reconnect" class="secondary">Reconnect Wio</button>
       <button id="newSession" class="danger">
@@ -471,6 +486,12 @@ let fix = null;
 
 let recording = false;
 let bleBusy = false;
+let writeJobs = new Set();
+let syncBusy = false;
+let completedSession = false;
+let syncUrl = localStorage.getItem("wardriver_sync_url") || "";
+let uploadToken = sessionStorage.getItem("wardriver_upload_token") || "";
+
 let follow = true;
 
 let rxCount = 0;
@@ -611,6 +632,7 @@ async function initSession() {
     noGps = packets.filter(p => p.lat == null).length;
 
     updateCounts();
+    await refreshPending();
 
     track.forEach(drawTrack);
     packets.forEach(drawPacket);
@@ -933,7 +955,7 @@ function onBLE(event) {
   addRow(point);
 
   if (recording) {
-    savePacket(point);
+    trackWrite(savePacket(point));
   }
 }
 
@@ -1036,7 +1058,7 @@ function startGPS() {
         };
 
         try {
-          await dbPut("track", point);
+          await trackWrite(dbPut("track", point));
           trackCount++;
           updateCounts();
           drawTrack(point);
@@ -1075,12 +1097,25 @@ function stopGPS() {
 
 /* Recording */
 
-function startRecord() {
+async function startRecord() {
+  if (syncBusy) {log("Wait for sync to finish");return;}
   if (!db) {
     log("Storage not ready");
     return;
   }
 
+  if (completedSession) {
+    sessionId = new Date().toISOString();
+    await dbPut("meta", {key:"current",value:sessionId});
+    packetCount = 0; trackCount = 0; noGps = 0; rxCount = 0;
+    updateCounts();
+    $("rxCount").textContent = "0";
+    $("packetRows").textContent = "";
+    if (packetLayer) packetLayer.clearLayers();
+    if (trackLine) trackLine.setLatLngs([]);
+    $("sessionStatus").textContent = sessionId.slice(0,19).replace("T"," ");
+    completedSession = false;
+  }
   recording = true;
   lastTrackAt = 0;
 
@@ -1093,12 +1128,33 @@ function startRecord() {
 
 function stopRecord() {
   recording = false;
-
   $("statePill").textContent = "Not recording";
   $("statePill").className = "pill";
-
   log("Recording stopped");
   updateButtons();
+}
+
+function trackWrite(promise) {
+  writeJobs.add(promise);
+  promise.finally(() => writeJobs.delete(promise)).catch(() => {});
+  return promise;
+}
+
+async function stopAndSync() {
+  if (!recording) return;
+  stopRecord();
+  const completedId = sessionId;
+  completedSession = true;
+  await Promise.allSettled([...writeJobs]);
+  // Wait for any GPS write that began just before Stop.
+  await new Promise(resolve => setTimeout(resolve, 150));
+  try {
+    await dbPut("meta", {key:"pending:" + completedId, value:completedId});
+    await refreshPending();
+    await syncPending();
+  } catch(e) {
+    syncState("Pending - " + e.message);
+  }
 }
 
 /* Export */
@@ -1283,8 +1339,10 @@ async function newSession() {
 
   if (!confirm(message)) return;
 
-  stopRecord();
-
+  if (recording || syncBusy) {
+    alert("Stop recording and wait for sync before creating a new session.");
+    return;
+  }
   const nextSessionId = new Date().toISOString();
 
   try {
@@ -1317,6 +1375,91 @@ async function newSession() {
 
   } catch (error) {
     log("New session error: " + error.message);
+  }
+}
+
+
+/* Server sync: only completed sessions, never raw live BLE streaming. */
+function syncState(message) {
+  $("syncStatus").textContent = message;
+  $("syncBadge").textContent = "Sync: " + message;
+}
+function serverBase() {
+  const u = new URL(syncUrl.trim());
+  if (u.protocol !== "https:") throw new Error("HTTPS URL required");
+  if (u.username || u.password || u.search || u.hash) throw new Error("Use server base URL only");
+  return u.origin + u.pathname.replace(/\/+$/, "");
+}
+async function pendingIds() {
+  if (!db) return [];
+  return new Promise((resolve,reject)=>{
+    const req=db.transaction("meta").objectStore("meta").getAll();
+    req.onsuccess=()=>resolve(req.result
+      .filter(x=>x.key.startsWith("pending:")).map(x=>x.value));
+    req.onerror=()=>reject(req.error);
+  });
+}
+async function refreshPending() {
+  const ids=await pendingIds();
+  $("pendingCount").textContent=ids.length;
+  return ids;
+}
+function dbAllFor(store,id) {
+  return new Promise((resolve,reject)=>{
+    const req=db.transaction(store).objectStore(store).index("session").getAll(id);
+    req.onsuccess=()=>resolve(req.result);
+    req.onerror=()=>reject(req.error);
+  });
+}
+function deleteMeta(key) {
+  return new Promise((resolve,reject)=>{
+    const req=db.transaction("meta","readwrite").objectStore("meta").delete(key);
+    req.onsuccess=()=>resolve();
+    req.onerror=()=>reject(req.error);
+  });
+}
+async function syncPending() {
+  if (syncBusy) return;
+  if (!db) { syncState("Storage unavailable"); return; }
+  const ids=await refreshPending();
+  if (!ids.length) {syncState("All synced");return;}
+  if (!syncUrl.trim()) {syncState("Pending - set server URL");return;}
+  if (!uploadToken) {syncState("Pending - enter token");return;}
+  syncBusy=true;
+  try {
+    const base=serverBase();
+    for (const id of ids) {
+      syncState("Uploading...");
+      const [packets,track]=await Promise.all([
+        dbAllFor("packets",id),dbAllFor("track",id)
+      ]);
+      const payload={session_id:id,source:"WarDriver-v0.6",
+        packets:packets.map(({id:localId,session,...rest})=>({
+          ...rest,node_id:rest.node_key||null
+        })),
+        track:track.map(({id:localId,session,...rest})=>rest)};
+      const response=await fetch(base+"/api/sessions",{
+        method:"POST",
+        headers:{"Content-Type":"application/json",
+                 "Authorization":"Bearer "+uploadToken},
+        body:JSON.stringify(payload),
+        cache:"no-store"
+      });
+      if(!response.ok) throw new Error("HTTP "+response.status);
+      const result=await response.json();
+      if(result.status!=="saved" && result.status!=="already_exists")
+        throw new Error("Unexpected server acknowledgement");
+      await deleteMeta("pending:"+id);
+      await dbPut("meta",{key:"synced:"+id,value:new Date().toISOString()});
+      log("Synced session "+id);
+    }
+    syncState("Synced");
+  } catch(e) {
+    syncState("Pending - upload failed");
+    log("Sync error: "+e.message);
+  } finally {
+    syncBusy=false;
+    await refreshPending();
   }
 }
 
@@ -1360,7 +1503,7 @@ $("gpsBtn").onclick = () => {
   else startGPS();
 };
 $("recordBtn").onclick = () => {
-  if (recording) stopRecord();
+  if (recording) stopAndSync();
   else startRecord();
 };
 
@@ -1383,6 +1526,24 @@ $("trackCsv").onclick = () => exportData("track");
 $("geo").onclick = () => exportData("geo");
 
 $("newSession").onclick = newSession;
+$("serverUrl").value=syncUrl;
+$("serverUrl").addEventListener("change",()=>{
+  syncUrl=$("serverUrl").value.trim();
+  localStorage.setItem("wardriver_sync_url",syncUrl);
+  syncState("Configured - not synced");
+});
+$("setToken").onclick=()=>{
+  const value=prompt("Enter the upload token (stored for this browser tab only):","");
+  if(value!==null) {
+    uploadToken=value.trim();
+    if(uploadToken) sessionStorage.setItem("wardriver_upload_token",uploadToken);
+    else sessionStorage.removeItem("wardriver_upload_token");
+    syncState(uploadToken?"Token set":"Token cleared");
+  }
+};
+$("retrySync").onclick=syncPending;
+if(syncUrl) syncState("Server configured");
+
 
 /* Tabs */
 
