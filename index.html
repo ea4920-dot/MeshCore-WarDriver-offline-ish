@@ -705,11 +705,12 @@ function initMap() {
   repeaterLayer = L.layerGroup().addTo(map);
   map.on("moveend", renderRepeaterMarkers);
 
+ // Keep GPS track data, but do not display the blue route.
   trackLine = L.polyline([], {
     color: "#47aaff",
     weight: 4,
-    opacity: 0.85
-  }).addTo(map);
+    opacity: 0
+}).addTo(map);
 
   // Recalculate after the mobile layout settles.
   requestAnimationFrame(() => {
