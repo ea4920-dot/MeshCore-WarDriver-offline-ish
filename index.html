@@ -5,7 +5,7 @@
 <meta name="viewport"
  content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#101820">
-<title>MeshCore WarDriver v0.7.1</title>
+<title>MeshCore WarDriver <v0 class="7 3"></v0></title>
 
 <!-- Leaflet CSS: load before application styles -->
 <link rel="stylesheet"
@@ -292,7 +292,7 @@ button { padding:8px 7px; font-size:12px; }
 <header>
   <div>
     <h1>MeshCore WarDriver</h1>
-    <small>v0.7.1 | Repeater map + sync</small>
+    <small>v0.7.3 | Repeater map + sync</small>
   </div>
   <span id="statePill" class="pill">Not recording</span>
 </header>
@@ -953,93 +953,66 @@ function addRow(point) {
 /* Bluetooth */
 
 
+// A failed remembered-device connection offers a fresh picker on the next tap.
+let forcePickerNext = false;
+
 async function connect(reuse = true) {
   if (bleBusy) return;
-
   bleBusy = true;
   updateButtons();
-
+  let chosen = null;
   try {
-    if (!navigator.bluetooth) {
-      throw new Error("Web Bluetooth unavailable");
-    }
-
+    if (!navigator.bluetooth) throw new Error("Web Bluetooth unavailable");
     $("bleStatus").textContent = "Connecting...";
 
-    // First try the previously selected node.
-    if (reuse && device) {
-      log("Trying previous node");
-
-    } else if (
-      reuse &&
-      typeof navigator.bluetooth.getDevices === "function"
-    ) {
-      const devices = await navigator.bluetooth.getDevices();
-
-      device = devices.find(d =>
-        d.name && d.name.toLowerCase().includes("mesh")
-      ) || devices[0] || null;
+    if (reuse && !forcePickerNext) {
+      if (device) chosen = device;
+      else if (typeof navigator.bluetooth.getDevices === "function") {
+        try {
+          const devices = await navigator.bluetooth.getDevices();
+          chosen = devices.find(d => d.name && d.name.toLowerCase().includes("mesh")) || devices[0] || null;
+        } catch (err) {
+          log("Remembered devices unavailable: " + (err?.message || err?.name || String(err)));
+        }
+      }
     }
 
-    // If no previous node is available, open the selector.
-    if (!device) {
+    if (!chosen) {
       log("Opening Bluetooth device selector");
-
-      device = await navigator.bluetooth.requestDevice({
+      chosen = await navigator.bluetooth.requestDevice({
         filters: [{ services: [SERVICE] }]
       });
     }
 
-    const server = device.gatt.connected
-      ? device.gatt
-      : await device.gatt.connect();
-
+    const server = chosen.gatt.connected ? chosen.gatt : await chosen.gatt.connect();
     const svc = await server.getPrimaryService(SERVICE);
-    rxChar = await svc.getCharacteristic(RX);
-
-    rxChar.removeEventListener(
-      "characteristicvaluechanged",
-      onBLE
-    );
-
-    rxChar.addEventListener(
-      "characteristicvaluechanged",
-      onBLE
-    );
-
-    device.removeEventListener(
-      "gattserverdisconnected",
-      onDisconnect
-    );
-
-    device.addEventListener(
-      "gattserverdisconnected",
-      onDisconnect
-    );
-
-    await rxChar.startNotifications();
-
-    $("bleStatus").textContent =
-      device.name || "Connected";
-
+    const characteristic = await svc.getCharacteristic(RX);
+    characteristic.removeEventListener("characteristicvaluechanged", onBLE);
+    characteristic.addEventListener("characteristicvaluechanged", onBLE);
+    chosen.removeEventListener("gattserverdisconnected", onDisconnect);
+    chosen.addEventListener("gattserverdisconnected", onDisconnect);
+    await characteristic.startNotifications();
+    device = chosen;
+    rxChar = characteristic;
+    forcePickerNext = false;
+    $("bleStatus").textContent = device.name || "Connected";
     log("BLE notifications active");
-
   } catch (error) {
+    const detail = error?.message || error?.name || String(error) || "Unknown error";
     $("bleStatus").textContent = "Failed";
-    log("BLE: " + error.message);
-
-    // Allow a fresh device selection on the next attempt.
-    if (!device?.gatt?.connected) {
-      device = null;
-      rxChar = null;
+    log("BLE error: " + detail);
+    // Keep the remembered device; the next tap can use the picker instead.
+    forcePickerNext = true;
+    if (chosen?.gatt?.connected) {
+      try { chosen.gatt.disconnect(); } catch (_) {}
     }
-
+    rxChar = null;
+    log("Tap Connect Node again to choose a device manually");
   } finally {
     bleBusy = false;
     updateButtons();
   }
 }
-
 
 function onDisconnect() {
   $("bleStatus").textContent = "Disconnected";
@@ -1671,13 +1644,14 @@ $("connect").onclick = () => {
   if (device?.gatt?.connected) {
     device.gatt.disconnect();
   } else {
-    connect(false);
+    connect(true);
   }
 };
 $("reconnect").onclick = () => {
   if (device?.gatt?.connected) {
     log("Node is already connected");
   } else {
+    forcePickerNext = false;
     connect(true);
   }
 };
