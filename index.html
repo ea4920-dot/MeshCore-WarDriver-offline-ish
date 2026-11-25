@@ -701,9 +701,17 @@ function initMap() {
     }
   ).addTo(map);
 
+  
+  map.createPane("repeaters");
+  map.getPane("repeaters").style.zIndex = 390;
+
+  map.createPane("receptions");
+  map.getPane("receptions").style.zIndex = 450;
+
   packetLayer = L.layerGroup().addTo(map);
   repeaterLayer = L.layerGroup().addTo(map);
-  map.on("moveend", renderRepeaterMarkers);
+
+  map.on("moveend zoomend", renderRepeaterMarkers);
 
  // Keep GPS track data, but do not display the blue route.
   trackLine = L.polyline([], {
@@ -778,10 +786,18 @@ function renderRepeaterMarkers() {
   for (const r of repeaterDirectory.values()) {
     if (r.lat == null || r.lon == null || (r.lat === 0 && r.lon === 0)) continue;
     if (distanceKm(centre[0], centre[1], r.lat, r.lon) > REPEATER_RADIUS_KM) continue;
-    const marker = L.circleMarker([r.lat, r.lon], {
-      radius: 6, color: "#54baff", weight: 2,
-      fillColor: "#142c45", fillOpacity: .35
-    });
+    
+const zoom = map.getZoom();
+
+const marker = L.circleMarker([r.lat, r.lon], {
+  radius: zoom < 11 ? 2.5 : 5,
+  color: "#54baff",
+  weight: zoom < 11 ? 1 : 1.5,
+  fillColor: "#142c45",
+  fillOpacity: zoom < 11 ? 0.1 : 0.25,
+  opacity: zoom < 11 ? 0.45 : 0.85
+});
+
     const popup = document.createElement("div");
     const title = document.createElement("strong");
     title.textContent = r.name;
@@ -891,11 +907,12 @@ function drawPacket(point) {
   L.circleMarker(
     [point.lat, point.lon],
     {
-      radius: 5,
+      radius: 6,
       color: color(point.rssi),
       fillColor: color(point.rssi),
-      fillOpacity: 0.75,
-      weight: 1
+      fillOpacity: 0.95,
+      opacity; 1,
+      weight: 1.5
     }
   )
   .bindPopup(
