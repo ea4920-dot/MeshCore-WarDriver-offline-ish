@@ -354,7 +354,7 @@ button { padding:8px 7px; font-size:12px; }
 <header>
   <div>
     <h1>MeshCore WarDriver</h1>
-    <small>v0.7.5 | Repeater coverage + sync</small>
+    <small>v0.7.5 | Repeater Filter Refinement </small>
   </div>
   <span id="statePill" class="pill">Not recording</span>
 </header>
@@ -618,7 +618,6 @@ let showRepeaters = true;
 let sortedRepeaters = [];
 let evidenceMode = "both";
 const REPEATER_RADIUS_KM = 50;
-const REPEATER_RESULT_LIMIT = 50;
 const REPEATER_MARKER_LIMIT = 400;
 
 // Experimental: 1-byte path-hash matches are route candidates, not transmitter IDs.
@@ -894,7 +893,6 @@ function installRepeaterDirectory(entries) {
   for (const point of currentSessionPackets) enrichPacketEvidence(point);
   rebuildObservationCounts();
   renderNodes();
-  renderRepeaterResults($("repeaterSearch")?.value || "");
   renderRepeaterMarkers();
   renderPacketLayer();
   updateSelectionSummary();
@@ -913,10 +911,14 @@ const repeaterNameCollator = new Intl.Collator(undefined, {
 
 function filterRepeaters(query) {
   const text = String(query || "").trim().toLocaleLowerCase();
-  if (!text) return sortedRepeaters;
+  const heard = sortedRepeaters.filter(repeater => {
+    const counts = repeaterObservationCounts.get(repeater.key);
+    return counts && (counts.direct > 0 || counts.likely > 0);
+  });
+  if (!text) return heard;
   const keyPrefix = text.replace(/^0x/i, "").replace(/[\s:-]/g, "");
   const searchKey = /^[a-f\d]+$/i.test(keyPrefix) ? keyPrefix : "";
-  return sortedRepeaters.filter(repeater =>
+  return heard.filter(repeater =>
     repeater.name.trim().toLocaleLowerCase().includes(text) ||
     (searchKey && repeater.key.startsWith(searchKey))
   );
@@ -928,13 +930,17 @@ function renderRepeaterResults(query) {
   const matches = filterRepeaters(query);
   $("repeatersCount").textContent =
     `${matches.length} matching repeater${matches.length === 1 ? "" : "s"}`;
-  $("repeaterResultsNote").textContent = matches.length > REPEATER_RESULT_LIMIT
-    ? `Showing first ${REPEATER_RESULT_LIMIT}; refine your search to see more.`
-    : matches.length ? "Select a repeater to filter the map." :
-      repeaterDirectory.size ? "No matching repeaters." :
-      "Import a type-2 repeater library in Settings to begin.";
+  const heardCount = sortedRepeaters.filter(repeater => {
+    const counts = repeaterObservationCounts.get(repeater.key);
+    return counts && (counts.direct > 0 || counts.likely > 0);
+  }).length;
+  $("repeaterResultsNote").textContent = !repeaterDirectory.size
+    ? "Import a type-2 repeater library in Settings to begin."
+    : heardCount === 0 ? "No repeaters heard yet."
+      : matches.length ? "Select a repeater to filter the map."
+        : "No matching repeaters.";
   list.replaceChildren();
-  for (const repeater of matches.slice(0, REPEATER_RESULT_LIMIT)) {
+  for (const repeater of matches) {
     const item = document.createElement("button");
     item.type = "button";
     item.className = "repeaterResult" +
@@ -1016,6 +1022,7 @@ function rebuildObservationCounts() {
     }
   }
   updateEvidenceDiagnostics();
+  renderRepeaterResults($("repeaterSearch")?.value || "");
 }
 
 function getAttributedPackets(key, mode = evidenceMode) {
@@ -1619,11 +1626,16 @@ async function savePacket(point) {
     } else {
       evidenceTotals.unknown++;
     }
+    let newlyHeardRepeater = false;
     for (const [mode, key] of [
       ["direct", point.direct_repeater_key],
       ["likely", point.likely_last_hop_key]
     ]) {
       if (!key || !repeaterDirectory.has(key)) continue;
+      const counts = repeaterObservationCounts.get(key);
+      if (!counts || (counts.direct === 0 && counts.likely === 0)) {
+        newlyHeardRepeater = true;
+      }
       if (!packetsByRepeater.has(key)) {
         packetsByRepeater.set(key, {direct: [], likely: []});
         repeaterObservationCounts.set(key, {direct: 0, likely: 0});
@@ -1638,8 +1650,12 @@ async function savePacket(point) {
 
     updateCounts();
     updateEvidenceDiagnostics();
-    updateRepeaterResultCount(point.direct_repeater_key);
-    updateRepeaterResultCount(point.likely_last_hop_key);
+    if (newlyHeardRepeater) {
+      renderRepeaterResults($("repeaterSearch").value);
+    } else {
+      updateRepeaterResultCount(point.direct_repeater_key);
+      updateRepeaterResultCount(point.likely_last_hop_key);
+    }
     updateSelectionSummary();
     drawPacket(point);
 
