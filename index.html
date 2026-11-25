@@ -5,7 +5,7 @@
 <meta name="viewport"
  content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#101820">
-<title>MeshCore WarDriver v0.7.4</title>
+<title>MeshCore WarDriver v0.7.5</title>
 
 <!-- Leaflet CSS: load before application styles -->
 <link rel="stylesheet"
@@ -273,7 +273,8 @@ button { padding:8px 7px; font-size:12px; }
 #mapView > #map { flex:1 1 auto; min-height:100px; }
 #mapView > .panel { flex:0 0 auto; margin:4px 0 0; padding:7px; }
 #mapView > .panel .row, #mapView > .panel .foot { display:none; }
-#packetView, #settingsView { overflow-y:auto; }
+#repeatersView { overflow:hidden; }
+#settingsView { overflow-y:auto; }
 .wrap > .foot { display:none; }
 #heardPanel { flex:0 0 auto; background:#1c2b36; border:1px solid #344956; border-radius:10px; padding:6px 9px; margin-top:4px; }
 #heardPanel .heardTitle { font-size:12px; font-weight:700; margin-bottom:3px; }
@@ -284,8 +285,50 @@ button { padding:8px 7px; font-size:12px; }
 #repeaterInfo { font-size:11px; color:#9aafbd; margin:3px 0; }
 #mapFilterRow { display:flex; align-items:center; gap:6px; flex:0 0 auto; margin:3px 0; }
 #mapFilterRow label { font-size:11px; color:#9aafbd; white-space:nowrap; }
-#repeaterFilter { flex:1; min-width:0; border:1px solid #435764; border-radius:7px;
+#mapRepeaterSearch, #repeaterSearch {
+  min-width:0; border:1px solid #435764; border-radius:7px;
   background:#101820; color:#edf3f7; padding:5px 7px; font-size:11px; }
+#mapSearchBox { position:relative; flex:1; min-width:0; }
+#mapRepeaterSearch { width:100%; padding-right:40px; }
+#clearMapRepeaterSearch, #clearRepeaterSearch {
+  min-height:32px; padding:4px 8px; background:#3b5362;
+}
+.suggestions {
+  position:absolute; z-index:1200; top:100%; left:0; right:0;
+  max-height:190px; overflow-y:auto; background:#172631;
+  border:1px solid #435764; border-radius:7px; box-shadow:0 4px 12px #0008;
+}
+.suggestions[hidden] { display:none; }
+.suggestions button { display:block; width:100%; text-align:left; border-radius:0; }
+#evidenceMode { display:flex; gap:3px; flex:0 0 auto; }
+#evidenceMode button { padding:5px 9px; font-size:11px; background:#314654; }
+#evidenceMode button.active { background:#2186c7; }
+#mapSelectionSummary, #repeaterSummary {
+  flex:0 0 auto; margin:2px 0; color:#c5d5df; font-size:10px;
+  line-height:1.3; overflow:hidden; text-overflow:ellipsis;
+}
+#repeaterResults {
+  flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain;
+  display:grid; align-content:start; gap:5px; padding:2px 1px;
+}
+.repeaterResult {
+  width:100%; min-height:48px; display:flex; align-items:center;
+  justify-content:space-between; gap:8px; text-align:left;
+  background:#243744; border:1px solid #344956;
+}
+.repeaterResult.selected { border-color:#54baff; }
+.repeaterResultName { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.repeaterResultMeta { flex:0 0 auto; text-align:right; font-size:10px; line-height:1.4; }
+.repeaterSearchBar { display:flex; gap:6px; flex:0 0 auto; }
+#repeaterSearch { flex:1; min-height:38px; font-size:14px; }
+#repeatersView .panel { display:flex; flex-direction:column; flex:1; min-height:0; }
+#repeatersCount { flex:0 0 auto; font-size:11px; color:#9aafbd; }
+#repeaterResultsNote { flex:0 0 auto; font-size:10px; color:#9aafbd; margin:3px 0; }
+#repeatersView #heardPanel { flex:0 0 auto; }
+#packetDiagnostics { margin-top:8px; }
+#packetDiagnostics summary { min-height:38px; padding:9px 0; cursor:pointer; }
+#packetDiagnostics .scroll { max-height:220px; }
+#packetRows { min-width:560px; }
 #mapEvidenceNote { flex:0 0 auto; margin:0; font-size:10px; line-height:1.2;
   color:#9aafbd; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 #repeaterImport { width:100%; max-width:100%; font-size:12px; }
@@ -298,7 +341,7 @@ button { padding:8px 7px; font-size:12px; }
 <header>
   <div>
     <h1>MeshCore WarDriver</h1>
-    <small>v0.7.4 | Repeater map + sync</small>
+    <small>v0.7.5 | Repeater coverage + sync</small>
   </div>
   <span id="statePill" class="pill">Not recording</span>
 </header>
@@ -341,7 +384,7 @@ button { padding:8px 7px; font-size:12px; }
 
 <div class="tabs">
   <button class="active" data-tab="mapView">Map</button>
-  <button data-tab="packetView">Packets</button>
+  <button data-tab="repeatersView">Repeaters</button>
   <button data-tab="settingsView">Settings</button>
 </div>
 
@@ -351,17 +394,21 @@ button { padding:8px 7px; font-size:12px; }
 
   <div id="syncBadge">Sync: not configured</div>
   <div id="mapFilterRow">
-    <label for="repeaterFilter">Filter receptions</label>
-    <select id="repeaterFilter" aria-label="Filter receptions by repeater evidence">
-      <option value="">All receptions</option>
-    </select>
+    <label for="mapRepeaterSearch">Repeater</label>
+    <div id="mapSearchBox">
+      <input id="mapRepeaterSearch" type="search" autocomplete="off"
+        placeholder="Search repeaters..." aria-label="Search repeaters to filter the map">
+      <div id="mapRepeaterSuggestions" class="suggestions" hidden></div>
+    </div>
+    <button id="clearMapRepeaterSearch" class="secondary" type="button" aria-label="Clear selected repeater">Clear</button>
   </div>
-  <p id="mapEvidenceNote">Route matches are candidates, not confirmed direct links. Advertisement decoding awaits protocol verification. RSSI/SNR are receiver measurements.</p>
-  <div id="heardPanel">
-    <div class="heardTitle">Repeaters heard <span id="nodeCount" class="muted">0</span> <span id="directoryCount" class="muted"></span></div>
-    <div id="heardList"><div class="heardItem muted">Waiting for advertisements...</div></div>
-    <div id="heardNote">Blue outlines = known repeater locations; coloured dots = recorded RF receptions. Directory markers are not evidence of reception.</div>
+  <div id="evidenceMode" role="group" aria-label="Reception evidence filter">
+    <button type="button" class="active" data-evidence-mode="both" aria-pressed="true">Both</button>
+    <button type="button" data-evidence-mode="direct" aria-pressed="false">Direct</button>
+    <button type="button" data-evidence-mode="likely" aria-pressed="false">Likely</button>
   </div>
+  <div id="mapSelectionSummary">All receptions · Unknown observations included · no repeater-specific attribution</div>
+  <p id="mapEvidenceNote">Direct transmitter identity is not available from these packet fields. Flood last-hop matches are likely only; RSSI/SNR are receiver measurements.</p>
 
   <div class="panel">
     <div class="actions">
@@ -399,23 +446,22 @@ button { padding:8px 7px; font-size:12px; }
   </div>
 </section>
 
-<section id="packetView" class="view">
+<section id="repeatersView" class="view">
   <div class="panel">
-    <h3>Latest radio receptions</h3>
-    <div class="scroll">
-      <table>
-        <thead>
-          <tr>
-            <th>Time</th>
-            <th>RSSI</th>
-            <th>SNR</th>
-            <th>GPS</th>
-            <th>Node</th>
-          </tr>
-        </thead>
-        <tbody id="packetRows"></tbody>
-      </table>
+    <h3>Repeaters</h3>
+    <div class="repeaterSearchBar">
+      <input id="repeaterSearch" type="search" autocomplete="off"
+        placeholder="Search repeaters..." aria-label="Search repeater names and public-key prefixes">
+      <button id="clearRepeaterSearch" class="secondary" type="button">Clear</button>
     </div>
+    <div id="repeatersCount">0 repeaters</div>
+    <div id="repeaterResultsNote">Import a type-2 repeater library in Settings to begin.</div>
+    <div id="repeaterResults" aria-live="polite"></div>
+    <details id="heardPanel" class="panel">
+      <summary>Recent advertisement notifications <span id="nodeCount" class="muted">0</span></summary>
+      <div id="heardList"><div class="heardItem muted">No advertisement notifications yet</div></div>
+      <div id="heardNote">Advertisement notifications identify advertised nodes, not the immediate RF transmitter.</div>
+    </details>
   </div>
 </section>
 
@@ -474,6 +520,21 @@ button { padding:8px 7px; font-size:12px; }
       <span>Storage</span>
       <b id="dbStatus">Opening...</b>
     </div>
+    <div class="row"><span>Direct-evidence receptions</span><b id="directEvidenceCount">0</b></div>
+    <div class="row"><span>Likely last-hop receptions</span><b id="likelyEvidenceCount">0</b></div>
+    <div class="row"><span>Ambiguous last-hop receptions</span><b id="ambiguousEvidenceCount">0</b></div>
+    <div class="row"><span>Unknown receptions</span><b id="unknownEvidenceCount">0</b></div>
+    <details id="packetDiagnostics">
+      <summary>Latest radio receptions (last 30)</summary>
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr><th>Time</th><th>RSSI</th><th>SNR</th><th>GPS</th><th>Evidence</th></tr>
+          </thead>
+          <tbody id="packetRows"></tbody>
+        </table>
+      </div>
+    </details>
     <div id="debug"></div>
   </div>
 </section>
@@ -541,10 +602,16 @@ let currentSessionPackets = [];
 let selectedRepeaterKey = "";
 let repeaterObservationCounts = new Map();
 let packetsByRepeater = new Map();
+let evidenceTotals = {direct: 0, likely: 0, ambiguous: 0, unknown: 0};
 let renderGeneration = 0;
 let repeaterLayer = null;
 let showRepeaters = true;
+let sortedRepeaters = [];
+let evidenceMode = "both";
 const REPEATER_RADIUS_KM = 50;
+const REPEATER_RESULT_LIMIT = 50;
+const MAP_SUGGESTION_LIMIT = 8;
+const REPEATER_MARKER_LIMIT = 400;
 
 // Experimental: 1-byte path-hash matches are route candidates, not transmitter IDs.
 const routeCandidateStats = { packets: 0, ambiguous: 0 };
@@ -807,14 +874,24 @@ function installRepeaterDirectory(entries) {
       index.get(prefix).push(repeater);
     }
   }
+  sortedRepeaters = [...repeaterDirectory.values()].sort((a, b) =>
+    repeaterNameCollator.compare(a.name.trim(), b.name.trim()) ||
+    a.key.localeCompare(b.key)
+  );
+  if (selectedRepeaterKey && !repeaterDirectory.has(selectedRepeaterKey)) {
+    selectedRepeaterKey = "";
+    $("mapRepeaterSearch").value = "";
+  }
   $("repeaterSaved").textContent = String(repeaterDirectory.size);
-  $("directoryCount").textContent = `· ${repeaterDirectory.size} saved`;
-  updateRepeaterFilterOptions();
   for (const point of currentSessionPackets) enrichPacketEvidence(point);
   rebuildObservationCounts();
   renderNodes();
+  renderRepeaterResults($("repeaterSearch")?.value || "");
+  renderMapRepeaterSuggestions($("mapRepeaterSearch")?.value || "");
   renderRepeaterMarkers();
   renderPacketLayer();
+  updateSelectionSummary();
+  updateEvidenceDiagnostics();
   const rows = $("packetRows");
   if (rows && currentSessionPackets.length) {
     rows.replaceChildren();
@@ -822,34 +899,190 @@ function installRepeaterDirectory(entries) {
   }
 }
 
-function updateRepeaterFilterOptions() {
-  const select = $("repeaterFilter");
-  if (!select) return;
-  const previous = selectedRepeaterKey;
-  select.replaceChildren(new Option("All receptions", ""));
-  for (const repeater of repeaterDirectory.values()) {
-    const option = new Option(
-      `${repeater.name} · ${repeater.key.slice(0, 8)}`,
-      repeater.key
-    );
-    select.add(option);
+const repeaterNameCollator = new Intl.Collator(undefined, {
+  usage: "sort",
+  sensitivity: "base"
+});
+
+function filterRepeaters(query) {
+  const text = String(query || "").trim().toLocaleLowerCase();
+  if (!text) return sortedRepeaters;
+  const keyPrefix = text.replace(/^0x/i, "").replace(/[\s:-]/g, "");
+  const searchKey = /^[a-f\d]+$/i.test(keyPrefix) ? keyPrefix : "";
+  return sortedRepeaters.filter(repeater =>
+    repeater.name.trim().toLocaleLowerCase().includes(text) ||
+    (searchKey && repeater.key.startsWith(searchKey))
+  );
+}
+
+function renderRepeaterResults(query) {
+  const list = $("repeaterResults");
+  if (!list) return;
+  const matches = filterRepeaters(query);
+  $("repeatersCount").textContent =
+    `${matches.length} matching repeater${matches.length === 1 ? "" : "s"}`;
+  $("repeaterResultsNote").textContent = matches.length > REPEATER_RESULT_LIMIT
+    ? `Showing first ${REPEATER_RESULT_LIMIT}; refine your search to see more.`
+    : matches.length ? "Select a repeater to filter the map." :
+      repeaterDirectory.size ? "No matching repeaters." :
+      "Import a type-2 repeater library in Settings to begin.";
+  list.replaceChildren();
+  for (const repeater of matches.slice(0, REPEATER_RESULT_LIMIT)) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "repeaterResult" +
+      (repeater.key === selectedRepeaterKey ? " selected" : "");
+    item.dataset.repeaterKey = repeater.key;
+    const name = document.createElement("span");
+    name.className = "repeaterResultName";
+    name.textContent = repeater.name;
+    const meta = document.createElement("span");
+    meta.className = "repeaterResultMeta";
+    const counts = repeaterObservationCounts.get(repeater.key) ||
+      {direct: 0, likely: 0};
+    meta.textContent = `${repeater.key.slice(0, 8).toUpperCase()} · ` +
+      `Direct ${counts.direct} · Likely ${counts.likely}`;
+    item.append(name, meta);
+    item.addEventListener("click", () => selectRepeater(repeater.key));
+    list.appendChild(item);
   }
-  selectedRepeaterKey = repeaterDirectory.has(previous) ? previous : "";
-  select.value = selectedRepeaterKey;
+}
+
+function updateRepeaterResultCount(key) {
+  if (!key) return;
+  const item = [...$("repeaterResults").children]
+    .find(child => child.dataset.repeaterKey === key);
+  if (!item) return;
+  const repeater = repeaterDirectory.get(key);
+  const counts = repeaterObservationCounts.get(key) || {direct: 0, likely: 0};
+  item.lastElementChild.textContent =
+    `${key.slice(0, 8).toUpperCase()} · Direct ${counts.direct} · Likely ${counts.likely}`;
+  if (repeater) item.lastElementChild.setAttribute("aria-label", repeater.name);
+}
+
+function renderMapRepeaterSuggestions(query) {
+  const box = $("mapRepeaterSuggestions");
+  if (!box) return;
+  const text = String(query || "").trim();
+  const matches = text ? filterRepeaters(text).slice(0, MAP_SUGGESTION_LIMIT) : [];
+  box.replaceChildren();
+  for (const repeater of matches) {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.textContent = `${repeater.name} · ${repeater.key.slice(0, 8).toUpperCase()}`;
+    option.addEventListener("click", () => selectRepeater(repeater.key));
+    box.appendChild(option);
+  }
+  box.hidden = matches.length === 0;
+}
+
+function selectRepeater(key) {
+  if (!repeaterDirectory.has(key)) return;
+  selectedRepeaterKey = key;
+  $("mapRepeaterSearch").value = repeaterDirectory.get(key).name;
+  $("mapRepeaterSuggestions").hidden = true;
+  renderRepeaterResults($("repeaterSearch").value);
+  renderPacketLayer();
+  updateSelectionSummary();
+  switchTab("mapView");
+}
+
+function clearRepeaterSelection() {
+  selectedRepeaterKey = "";
+  $("mapRepeaterSearch").value = "";
+  $("mapRepeaterSuggestions").hidden = true;
+  renderRepeaterResults($("repeaterSearch").value);
+  renderPacketLayer();
+  updateSelectionSummary();
+  switchTab("mapView");
 }
 
 function rebuildObservationCounts() {
   repeaterObservationCounts = new Map();
   packetsByRepeater = new Map();
+  evidenceTotals = {direct: 0, likely: 0, ambiguous: 0, unknown: 0};
   for (const point of currentSessionPackets) {
-    for (const key of pointEvidenceKeys(point)) {
-      if (!packetsByRepeater.has(key)) packetsByRepeater.set(key, []);
-      packetsByRepeater.get(key).push(point);
+    const evidence = point.evidence_class || "unknown";
+    if (Object.prototype.hasOwnProperty.call(evidenceTotals, evidence)) {
+      evidenceTotals[evidence]++;
+    }
+    const evidenceEntries = [
+      ["direct", point.direct_repeater_key],
+      ["likely", point.likely_last_hop_key]
+    ];
+    for (const [mode, key] of evidenceEntries) {
+      if (!key || !repeaterDirectory.has(key)) continue;
+      if (!packetsByRepeater.has(key)) {
+        packetsByRepeater.set(key, {direct: [], likely: []});
+        repeaterObservationCounts.set(key, {direct: 0, likely: 0});
+      }
+      packetsByRepeater.get(key)[mode].push(point);
+      repeaterObservationCounts.get(key)[mode]++;
     }
   }
-  for (const [key, points] of packetsByRepeater) {
-    repeaterObservationCounts.set(key, points.length);
+  updateEvidenceDiagnostics();
+}
+
+function getAttributedPackets(key, mode = evidenceMode) {
+  const groups = packetsByRepeater.get(key);
+  if (!groups) return [];
+  if (mode === "direct") return groups.direct;
+  if (mode === "likely") return groups.likely;
+  return [...groups.direct, ...groups.likely];
+}
+
+function updateSelectionSummary() {
+  const summary = $("mapSelectionSummary");
+  if (!summary) return;
+  if (!selectedRepeaterKey || !repeaterDirectory.has(selectedRepeaterKey)) {
+    selectedRepeaterKey = "";
+    const visibleCount = evidenceMode === "both"
+      ? currentSessionPackets.length
+      : currentSessionPackets.filter(point =>
+          evidenceMode === "direct"
+            ? point.evidence_class === "direct"
+            : point.evidence_class === "likely"
+        ).length;
+    summary.textContent = evidenceMode === "both"
+      ? `All receptions · ${visibleCount} observations · Unknown included; not repeater-specific`
+      : `${evidenceMode === "direct" ? "Direct" : "Likely"} evidence only · ${visibleCount} observations`;
+    return;
   }
+
+  const repeater = repeaterDirectory.get(selectedRepeaterKey);
+  const counts = repeaterObservationCounts.get(selectedRepeaterKey) ||
+    {direct: 0, likely: 0};
+  const points = getAttributedPackets(selectedRepeaterKey);
+  if (!points.length) {
+    summary.textContent = `${repeater.name} · Direct ${counts.direct} · Likely ${counts.likely} · No recorded reception evidence`;
+    return;
+  }
+  const rssiValues = points.map(point => Number(point.rssi)).filter(Number.isFinite);
+  const snrValues = points.map(point => Number(point.snr)).filter(Number.isFinite);
+  const average = values => values.length
+    ? values.reduce((sum, value) => sum + value, 0) / values.length
+    : null;
+  const avgRssi = average(rssiValues);
+  const avgSnr = average(snrValues);
+  const strongest = rssiValues.length
+    ? rssiValues.reduce((best, value) => Math.max(best, value), -Infinity)
+    : null;
+  const weakest = rssiValues.length
+    ? rssiValues.reduce((worst, value) => Math.min(worst, value), Infinity)
+    : null;
+  summary.textContent =
+    `${repeater.name} · Direct ${counts.direct} · Likely ${counts.likely} · ` +
+    `RSSI strongest ${strongest == null ? "--" : strongest + " dBm"} / ` +
+    `weakest ${weakest == null ? "--" : weakest + " dBm"} / ` +
+    `avg ${avgRssi == null ? "--" : avgRssi.toFixed(1) + " dBm"} · ` +
+    `avg SNR ${avgSnr == null ? "--" : avgSnr.toFixed(1) + " dB"}`;
+}
+
+function updateEvidenceDiagnostics() {
+  $("directEvidenceCount").textContent = String(evidenceTotals.direct);
+  $("likelyEvidenceCount").textContent = String(evidenceTotals.likely);
+  $("ambiguousEvidenceCount").textContent = String(evidenceTotals.ambiguous);
+  $("unknownEvidenceCount").textContent = String(evidenceTotals.unknown);
 }
 
 function renderRepeaterMarkers() {
@@ -861,44 +1094,48 @@ function renderRepeaterMarkers() {
   for (const r of repeaterDirectory.values()) {
     if (r.lat == null || r.lon == null) continue;
     if (distanceKm(centre[0], centre[1], r.lat, r.lon) > REPEATER_RADIUS_KM) continue;
+    if (shown >= REPEATER_MARKER_LIMIT) break;
     
 const zoom = map.getZoom();
 
 const marker = L.circleMarker([r.lat, r.lon], {
-  radius: zoom < 11 ? 2.5 : 5,
-  color: "#54baff",
-  weight: zoom < 11 ? 1 : 1.5,
-  fillColor: "#142c45",
-  fillOpacity: zoom < 11 ? 0.1 : 0.25,
-  opacity: zoom < 11 ? 0.45 : 0.85
+  radius: zoom < 11 ? 2 : 4,
+  color: "#56a9d8",
+  weight: zoom < 11 ? 1 : 1.25,
+  fillColor: "#23658a",
+  fillOpacity: 0.16,
+  opacity: 0.6
 });
 
     const popup = document.createElement("div");
     const title = document.createElement("strong");
     title.textContent = r.name;
     const details = document.createElement("div");
-    const describeEvidence = count =>
+    const describeEvidence = counts =>
       `Published location: ${r.lat.toFixed(5)}, ${r.lon.toFixed(5)}. ` +
       `Public-key prefix: ${r.key.slice(0,16)}... ` +
-      `Recorded observations with this repeater's advert/route evidence: ${count}. ` +
-      "Route participation does not confirm direct transmission; RSSI/SNR are receiver measurements.";
-    details.textContent = describeEvidence(repeaterObservationCounts.get(r.key) || 0);
+      `Direct evidence: ${counts.direct}; likely last-hop: ${counts.likely}. ` +
+      "Location is published directory data, not evidence of reception.";
+    const counts = repeaterObservationCounts.get(r.key) ||
+      {direct: 0, likely: 0};
+    details.textContent = describeEvidence(counts);
     const filterButton = document.createElement("button");
     filterButton.type = "button";
-    filterButton.textContent = "Filter receptions to this repeater";
+    filterButton.textContent = "View repeater evidence";
     filterButton.addEventListener("click", () => {
-      selectedRepeaterKey = r.key;
-      $("repeaterFilter").value = r.key;
-      renderPacketLayer();
+      selectRepeater(r.key);
       map.closePopup();
     });
     popup.append(title, details, filterButton);
     marker.bindPopup(popup).on("popupopen", () => {
-      details.textContent = describeEvidence(repeaterObservationCounts.get(r.key) || 0);
+      details.textContent = describeEvidence(
+        repeaterObservationCounts.get(r.key) || {direct: 0, likely: 0}
+      );
     }).addTo(repeaterLayer);
     shown++;
   }
-  $("repeaterInfo").textContent = `${shown} repeaters shown within ${REPEATER_RADIUS_KM} km of ${fix ? "GPS" : "map centre"}.`;
+  $("repeaterInfo").textContent =
+    `${shown}${shown === REPEATER_MARKER_LIMIT ? "+" : ""} subtle published locations shown; not reception evidence.`;
 }
 
 function renderNodes() {
@@ -948,15 +1185,16 @@ function parseMeshRoute(bytes) {
   const encoded = bytes[offset++];
   const hopCount = encoded & 63;
   const width = (encoded >> 6) + 1;
+  const pathByteLength = hopCount * width;
   if (version !== 0 || width > 3 || hopCount * width > 64 ||
-      offset + hopCount * width >= bytes.length) return null;
+      offset + pathByteLength > bytes.length) return null;
   const hops = [];
   for (let i = 0; i < hopCount; i++) {
     hops.push(Array.from(bytes.slice(offset + i * width, offset + (i+1)*width),
       b => b.toString(16).padStart(2,'0')).join(''));
   }
   return {routeType, payloadType, version, width, hopCount,
-    hops, payloadOffset: offset + hopCount * width};
+    hops, pathByteLength, payloadOffset: offset + pathByteLength};
 }
 
 function identifyRouteCandidates(route) {
@@ -972,6 +1210,21 @@ function identifyRouteCandidates(route) {
   return results;
 }
 
+function classifyLastHop(route) {
+  if (!route || ![0, 1].includes(route.routeType) || !route.hops.length) {
+    return {hash: null, matches: [], evidence: "unknown"};
+  }
+  const hash = route.hops[route.hops.length - 1];
+  const matches = (repeaterPrefixIndexes.get(route.width)?.get(hash) || [])
+    .map(repeater => ({key: repeater.key, name: repeater.name}));
+  return {
+    hash,
+    matches,
+    evidence: matches.length === 1 ? "likely" :
+      matches.length > 1 ? "ambiguous" : "unknown"
+  };
+}
+
 function bytesFromHex(value) {
   const compact = String(value || "").replace(/\s+/g, "");
   if (!compact || compact.length % 2 || !/^[a-f\d]+$/i.test(compact)) return null;
@@ -983,19 +1236,17 @@ function bytesFromHex(value) {
 }
 
 function decodeAdvertPublicKey(bytes, route) {
-  // Disabled pending validation against actual MeshCore advertisement packets.
-  // A 32-byte slice at a guessed offset is not proof of an advertisement.
-  return null;
+  const offset = route?.payloadOffset;
+  if (!bytes || route?.payloadType !== 4 || !Number.isInteger(offset) ||
+      offset < 0 || offset + 32 + 4 + 64 > bytes.length) return null;
+  return Array.from(bytes.slice(offset, offset + 32),
+    byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function pointEvidenceKeys(point) {
-  const keys = new Set(point.candidate_repeater_keys || []);
-  for (const candidate of point.route_candidates || []) {
-    for (const match of candidate.matches || []) {
-      if (match.key) keys.add(match.key);
-    }
-  }
-  if (point.node_key) keys.add(point.node_key);
+  const keys = new Set();
+  if (point.direct_repeater_key) keys.add(point.direct_repeater_key);
+  if (point.likely_last_hop_key) keys.add(point.likely_last_hop_key);
   return keys;
 }
 
@@ -1011,28 +1262,23 @@ function enrichPacketEvidence(point) {
   }
   const routeCandidates = route ? identifyRouteCandidates(route) :
     (point.route_candidates || []);
+  const lastHop = classifyLastHop(route);
   const advertisedKey = bytes && route ? decodeAdvertPublicKey(bytes, route) : null;
-  const knownAdvert = advertisedKey && repeaterDirectory.has(advertisedKey)
-    ? advertisedKey
-    : null;
-  const keys = new Set(routeCandidates.flatMap(candidate =>
+  const candidateKeys = [...new Set(routeCandidates.flatMap(candidate =>
     (candidate.matches || []).map(match => match.key)
-  ));
-  if (knownAdvert) keys.add(knownAdvert);
-
-  const hasAmbiguousRoute = routeCandidates.some(candidate =>
-    (candidate.matches || []).length > 1
-  );
-  const hasRouteMatch = routeCandidates.some(candidate =>
-    (candidate.matches || []).length > 0
-  );
-  const evidence = knownAdvert ? "identified_advertisement" :
-    hasAmbiguousRoute ? "ambiguous_route_candidates" :
-    hasRouteMatch ? "unique_route_candidate" : "unknown";
-  const candidateKeys = [...keys];
-
-  // Keep legacy identity fields on historical records; enrich only display copies.
-  if (knownAdvert) point.node_key = knownAdvert;
+  ))];
+  point.direct_repeater_key = null;
+  point.likely_last_hop_key = lastHop.evidence === "likely"
+    ? lastHop.matches[0].key
+    : null;
+  point.last_hop_hash = lastHop.hash;
+  point.last_hop_candidates = lastHop.matches;
+  point.evidence_class = lastHop.evidence;
+  point.identification_evidence = lastHop.evidence === "likely"
+    ? "likely_last_hop"
+    : lastHop.evidence === "ambiguous"
+      ? "ambiguous_last_hop"
+      : "unknown";
   point.advertisement_public_key = advertisedKey || point.advertisement_public_key || null;
   point.advertisement_signature_verified = null;
   point.route_hash_width = route?.width ?? point.route_hash_width ?? null;
@@ -1043,44 +1289,47 @@ function enrichPacketEvidence(point) {
   point.candidate_repeater_names = candidateKeys.map(key =>
     repeaterDirectory.get(key)?.name || ""
   );
-  point.identification_evidence = evidence;
-  if (!point.identity_basis || point.identity_basis === "unknown") {
-    point.identity_basis = knownAdvert ? "unverified_advertisement_key" :
-      hasRouteMatch ? "route_hash_candidates_only" : "unknown";
-  }
+  point.identity_basis = lastHop.evidence === "likely"
+    ? "flood_path_last_hash_likely"
+    : lastHop.evidence === "ambiguous"
+      ? "flood_path_last_hash_ambiguous"
+      : "unknown";
   return point;
 }
 
 function routeLabel(point) {
-  const evidence = point.identification_evidence;
-  if (evidence === "identified_advertisement" && point.node_key) {
-    return `Identified advertisement: ${repeaterDirectory.get(point.node_key)?.name || point.node_key.slice(0,12)}`;
+  if (point.evidence_class === "likely" && point.likely_last_hop_key) {
+    const repeater = repeaterDirectory.get(point.likely_last_hop_key);
+    return `Likely last hop: ${repeater?.name || point.likely_last_hop_key.slice(0, 8)}`;
   }
-  const candidates = point.route_candidates || [];
-  const groups = candidates.filter(c => c.matches.length);
-  if (!groups.length) return 'Unknown';
-  const prefix = evidence === "ambiguous_route_candidates"
-    ? "Ambiguous route candidates: "
-    : "Unique route candidate(s): ";
-  return prefix + groups.map(c => c.hash.toUpperCase() + ' → ' +
-    c.matches.map(r => `${r.name} (${r.key.slice(0,8)})`).join(', ')).join(' | ');
+  if (point.evidence_class === "ambiguous") {
+    const candidates = (point.last_hop_candidates || [])
+      .map(repeater => `${repeater.name} (${repeater.key.slice(0, 8)})`);
+    return `Ambiguous last hop ${point.last_hop_hash || ""}: ${candidates.join(", ")}`;
+  }
+  if ([2, 3].includes(point.route_type)) {
+    return "Unknown: direct route path is remaining hops, not prior transmitter";
+  }
+  if ([0, 1].includes(point.route_type) && !(point.route_hops || []).length) {
+    return "Unknown: flood path contains no relay identifier";
+  }
+  return "Unknown";
 }
 
 function drawPacket(point) {
   if (!map || point.lat == null || point.lon == null) return;
-  if (selectedRepeaterKey && !pointEvidenceKeys(point).has(selectedRepeaterKey)) return;
+  if (!packetMatchesMapFilter(point)) return;
 
   const popup = document.createElement("div");
-  const evidence = point.identification_evidence || "unknown";
   const lines = [
     `RSSI: ${point.rssi} dBm`,
     `SNR: ${point.snr} dB`,
     `Evidence: ${routeLabel(point)}`,
-    "Measurements belong to the receiving radio; route candidates do not prove direct reception.",
+    "RSSI/SNR are measurements at the receiving radio. Likely last-hop is not authenticated.",
     `Time: ${new Date(point.timestamp).toLocaleString()}`
   ];
-  if (evidence === "identified_advertisement") {
-    lines.push("Advertisement public key decoded; signature was not cryptographically verified.");
+  if (point.advertisement_public_key) {
+    lines.push(`Advertised origin key: ${point.advertisement_public_key.slice(0, 16)}…; signature not verified here.`);
   }
   for (const line of lines) {
     const row = document.createElement("div");
@@ -1088,15 +1337,17 @@ function drawPacket(point) {
     popup.appendChild(row);
   }
 
+  const likely = point.evidence_class === "likely";
+  const direct = point.evidence_class === "direct";
   L.circleMarker(
     [point.lat, point.lon],
     {
       radius: 6,
       color: color(point.rssi),
       fillColor: color(point.rssi),
-      fillOpacity: 0.95,
-      opacity: 1,
-      weight: 1.5,
+      fillOpacity: direct ? 0.95 : likely ? 0.22 : 0.55,
+      opacity: direct ? 1 : likely ? 0.8 : 0.6,
+      weight: likely ? 2 : 1.5,
       pane: "receptions",
       renderer: packetRenderer
     }
@@ -1105,13 +1356,25 @@ function drawPacket(point) {
   .addTo(packetLayer);
 }
 
+function packetMatchesMapFilter(point) {
+  const evidence = point.evidence_class || "unknown";
+  if (evidenceMode === "direct" && evidence !== "direct") return false;
+  if (evidenceMode === "likely" && evidence !== "likely") return false;
+  if (!selectedRepeaterKey) return true;
+  return evidence === "direct"
+    ? point.direct_repeater_key === selectedRepeaterKey
+    : evidence === "likely" && point.likely_last_hop_key === selectedRepeaterKey;
+}
+
 function renderPacketLayer() {
   if (!packetLayer) return;
   const generation = ++renderGeneration;
   packetLayer.clearLayers();
   const points = selectedRepeaterKey
-    ? (packetsByRepeater.get(selectedRepeaterKey) || [])
-    : currentSessionPackets;
+    ? getAttributedPackets(selectedRepeaterKey).filter(packetMatchesMapFilter)
+    : evidenceMode === "both"
+      ? currentSessionPackets
+      : currentSessionPackets.filter(packetMatchesMapFilter);
   let offset = 0;
   function nextChunk() {
     if (generation !== renderGeneration) return;
@@ -1128,7 +1391,7 @@ function addRow(point) {
   const values = [
     new Date(point.timestamp).toLocaleTimeString(),
     point.rssi + " dBm",
-    point.snr.toFixed(2) + " dB",
+    Number.isFinite(Number(point.snr)) ? Number(point.snr).toFixed(2) + " dB" : "--",
     point.lat == null ? "No" : "Yes",
     routeLabel(point)
   ];
@@ -1308,14 +1571,13 @@ function onBLE(event) {
   const radioBytes = bytes.slice(3);
   const route = parseMeshRoute(radioBytes);
   const routeCandidates = identifyRouteCandidates(route);
-  if (routeCandidates.some(c => c.matches.length)) {
+  const lastHop = classifyLastHop(route);
+  if (lastHop.matches.length) {
     routeCandidateStats.packets++;
-    if (routeCandidates.some(c => c.matches.length > 1)) routeCandidateStats.ambiguous++;
-    const matches = routeCandidates.filter(c => c.matches.length);
-    const summary = matches.map(c => c.hash + ':' + c.matches.length).join(' ');
+    if (lastHop.evidence === "ambiguous") routeCandidateStats.ambiguous++;
     $("heardNote").textContent =
-      `${route.width}-byte route candidates (not direct-link proof): ` +
-      `${summary}; ambiguous packets: ${routeCandidateStats.ambiguous}`;
+      `${route.width}-byte final flood hash ${lastHop.hash}: ` +
+      `${lastHop.matches.length} directory match(es); ambiguous: ${routeCandidateStats.ambiguous}.`;
   }
   const valid = fix &&
     now - fix.timestamp >= 0 &&
@@ -1357,10 +1619,22 @@ async function savePacket(point) {
   try {
     point.id = await dbPut("packets", point);
     currentSessionPackets.push(point);
-    for (const key of pointEvidenceKeys(point)) {
-      if (!packetsByRepeater.has(key)) packetsByRepeater.set(key, []);
-      packetsByRepeater.get(key).push(point);
-      repeaterObservationCounts.set(key, packetsByRepeater.get(key).length);
+    if (Object.prototype.hasOwnProperty.call(evidenceTotals, point.evidence_class)) {
+      evidenceTotals[point.evidence_class]++;
+    } else {
+      evidenceTotals.unknown++;
+    }
+    for (const [mode, key] of [
+      ["direct", point.direct_repeater_key],
+      ["likely", point.likely_last_hop_key]
+    ]) {
+      if (!key || !repeaterDirectory.has(key)) continue;
+      if (!packetsByRepeater.has(key)) {
+        packetsByRepeater.set(key, {direct: [], likely: []});
+        repeaterObservationCounts.set(key, {direct: 0, likely: 0});
+      }
+      packetsByRepeater.get(key)[mode].push(point);
+      repeaterObservationCounts.get(key)[mode]++;
     }
 
     packetCount++;
@@ -1368,6 +1642,10 @@ async function savePacket(point) {
     if (point.lat == null) noGps++;
 
     updateCounts();
+    updateEvidenceDiagnostics();
+    updateRepeaterResultCount(point.direct_repeater_key);
+    updateRepeaterResultCount(point.likely_last_hop_key);
+    updateSelectionSummary();
     drawPacket(point);
 
   } catch (error) {
@@ -1657,6 +1935,11 @@ async function exportData(kind) {
           "node_key",
           "identity_basis",
           "identification_evidence",
+          "evidence_class",
+          "direct_repeater_key",
+          "likely_last_hop_key",
+          "last_hop_hash",
+          "last_hop_candidates",
           "advertisement_public_key",
           "advertisement_signature_verified",
           "route_hash_width",
@@ -1717,6 +2000,11 @@ async function exportData(kind) {
             node_key: p.node_key || null,
             identity_basis: p.identity_basis || "unknown",
             identification_evidence: p.identification_evidence || "unknown",
+            evidence_class: p.evidence_class || "unknown",
+            direct_repeater_key: p.direct_repeater_key || null,
+            likely_last_hop_key: p.likely_last_hop_key || null,
+            last_hop_hash: p.last_hop_hash || null,
+            last_hop_candidates: p.last_hop_candidates || [],
             advertisement_public_key: p.advertisement_public_key || null,
             advertisement_signature_verified: p.advertisement_signature_verified ?? null,
             route_hash_width: p.route_hash_width ?? null,
@@ -1862,7 +2150,9 @@ async function syncPending() {
         packets:packets.map(({
           id:localId,session,raw_packet_hex,advertisement_public_key,
           advertisement_signature_verified,candidate_repeater_keys,
-          candidate_repeater_names,identification_evidence,...rest
+          candidate_repeater_names,identification_evidence,evidence_class,
+          direct_repeater_key,likely_last_hop_key,last_hop_hash,
+          last_hop_candidates,...rest
         })=>({
           ...rest,node_id:rest.node_key||null
         })),
@@ -1968,9 +2258,40 @@ $("trackCsv").onclick = () => exportData("track");
 $("geo").onclick = () => exportData("geo");
 
 $("newSession").onclick = newSession;
-$("repeaterFilter").addEventListener("change", () => {
-  selectedRepeaterKey = $("repeaterFilter").value;
-  renderPacketLayer();
+$("repeaterSearch").addEventListener("input", () => {
+  renderRepeaterResults($("repeaterSearch").value);
+});
+$("clearRepeaterSearch").onclick = () => {
+  $("repeaterSearch").value = "";
+  renderRepeaterResults("");
+  $("repeaterSearch").focus();
+};
+$("mapRepeaterSearch").addEventListener("input", () => {
+  renderMapRepeaterSuggestions($("mapRepeaterSearch").value);
+});
+$("mapRepeaterSearch").addEventListener("focus", () => {
+  renderMapRepeaterSuggestions($("mapRepeaterSearch").value);
+});
+$("mapRepeaterSearch").addEventListener("keydown", event => {
+  if (event.key === "Enter") {
+    const first = $("mapRepeaterSuggestions").firstElementChild;
+    if (first) first.click();
+  } else if (event.key === "Escape") {
+    $("mapRepeaterSuggestions").hidden = true;
+  }
+});
+$("clearMapRepeaterSearch").onclick = clearRepeaterSelection;
+document.querySelectorAll("[data-evidence-mode]").forEach(button => {
+  button.onclick = () => {
+    evidenceMode = button.dataset.evidenceMode;
+    document.querySelectorAll("[data-evidence-mode]").forEach(option => {
+      const active = option === button;
+      option.classList.toggle("active", active);
+      option.setAttribute("aria-pressed", String(active));
+    });
+    renderPacketLayer();
+    updateSelectionSummary();
+  };
 });
 $("repeaterImport").onchange = async event => {
   const file = event.target.files?.[0];
@@ -2027,40 +2348,26 @@ if(syncUrl) syncState("Server configured");
 
 /* Tabs */
 
-document.querySelectorAll("[data-tab]").forEach(
-  button => {
-    button.onclick = () => {
-      document.querySelectorAll("[data-tab]")
-        .forEach(b => {
-          b.classList.toggle(
-            "active",
-            b === button
-          );
-        });
-
-      document.querySelectorAll(".view")
-        .forEach(view => {
-          view.classList.toggle(
-            "active",
-            view.id === button.dataset.tab
-          );
-        });
-
-      if (
-        button.dataset.tab === "mapView" &&
-        map
-      ) {
-        requestAnimationFrame(() => {
-          map.invalidateSize(true);
-        });
-
-        setTimeout(() => {
-          map.invalidateSize(true);
-        }, 200);
-      }
-    };
+function switchTab(tabId) {
+  if (!document.getElementById(tabId)) return;
+  document.querySelectorAll("[data-tab]").forEach(button => {
+    button.classList.toggle("active", button.dataset.tab === tabId);
+  });
+  document.querySelectorAll(".view").forEach(view => {
+    view.classList.toggle("active", view.id === tabId);
+  });
+  if (tabId === "repeatersView") {
+    renderRepeaterResults($("repeaterSearch").value);
   }
-);
+  if (tabId === "mapView" && map) {
+    requestAnimationFrame(() => map.invalidateSize(true));
+    setTimeout(() => map.invalidateSize(true), 200);
+  }
+}
+
+document.querySelectorAll("[data-tab]").forEach(button => {
+  button.onclick = () => switchTab(button.dataset.tab);
+});
 
 /* Initialise */
 
@@ -2068,6 +2375,8 @@ initMap();
 initSession();
 updateButtons();
 renderNodes();
+renderRepeaterResults("");
+updateSelectionSummary();
 
 </script>
 </body>
