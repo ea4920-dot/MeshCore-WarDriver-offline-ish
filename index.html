@@ -1665,7 +1665,7 @@ $("connect").onclick = () => {
   if (device?.gatt?.connected) {
     device.gatt.disconnect();
   } else {
-    connect(false);
+    connect(true);
   }
 };
 $("reconnect").onclick = () => {
