@@ -132,6 +132,18 @@ input[type="url"] { width:100%;padding:10px;border:1px solid #435764;
 }
 
 .actions button { flex: 1 1 120px; }
+.actions .export-download {
+  display: block;
+  flex: 1 1 120px;
+  padding: 11px 12px;
+  border-radius: 9px;
+  background: #2186c7;
+  color: white;
+  font-size: 14px;
+  font-weight: 650;
+  text-align: center;
+  text-decoration: none;
+}
 
 .tabs {
   display: flex;
@@ -509,8 +521,8 @@ button { padding:8px 7px; font-size:12px; }
     </div>
 
     <p class="foot">
-      Exports use the iOS/Android Share Sheet
-      where supported, otherwise a browser download.
+      After preparation, choose Share or Download. Share is offered
+      where supported; browser download is always available.
       Save backups before clearing browser data.
     </p>
   </div>
@@ -1849,6 +1861,9 @@ async function stopAndSync() {
 
 /* Export */
 
+let exportGeneration = 0;
+let exportActionPanel = null;
+
 function csv(rows, fields) {
   const serialize = value => value == null ? "" :
     typeof value === "object" ? JSON.stringify(value) : String(value);
@@ -1864,63 +1879,119 @@ function csv(rows, fields) {
   ].join("\r\n");
 }
 
-async function saveFile(name, contents, mime) {
+function clearExportActionPanel() {
+  if (exportActionPanel) {
+    exportActionPanel.remove();
+    exportActionPanel = null;
+  }
+}
+
+function saveFile(name, contents, mime) {
   const file = new File(
     [contents],
     name,
     { type: mime }
   );
 
-  if (
-    navigator.share &&
-    navigator.canShare &&
-    navigator.canShare({ files: [file] })
-  ) {
-    try {
-      await navigator.share({
-        files: [file],
-        title: "MeshCore WarDriver export"
-      });
-
-      log("Share sheet opened");
-      return;
-
-    } catch (error) {
-      if (error.name === "AbortError") {
-        log("Share cancelled");
-        return;
-      }
-
-      log("Share failed: " + error.message);
-    }
-  }
-
   const url = URL.createObjectURL(file);
-  const a = document.createElement("a");
-
-  a.href = url;
-  a.download = name;
-
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-
   setTimeout(() => {
     URL.revokeObjectURL(url);
   }, 60000);
 
-  log("Download requested: " + name);
+  clearExportActionPanel();
+  const panel = document.createElement("div");
+  panel.className = "panel";
+
+  const message = document.createElement("p");
+  message.className = "foot";
+  message.textContent = "Export ready: " + name + ". Choose Download or Share.";
+  panel.appendChild(message);
+
+  const actions = document.createElement("div");
+  actions.className = "actions";
+
+  const download = document.createElement("a");
+  download.className = "export-download";
+  download.href = url;
+  download.download = name;
+  download.textContent = "Download";
+  download.addEventListener("click", () => {
+    log("Download requested (completion cannot be confirmed): " + name);
+  });
+  actions.appendChild(download);
+
+  let canShareFile = false;
+  if (typeof navigator.share === "function" &&
+      typeof navigator.canShare === "function") {
+    try {
+      canShareFile = navigator.canShare({ files: [file] });
+    } catch (error) {
+      log("Share unavailable for this file; use Download.");
+    }
+  }
+
+  if (canShareFile) {
+    const share = document.createElement("button");
+    share.type = "button";
+    share.className = "secondary";
+    share.textContent = "Share";
+    share.addEventListener("click", () => {
+      let sharePromise;
+      try {
+        sharePromise = navigator.share({
+          files: [file],
+          title: "MeshCore WarDriver export"
+        });
+      } catch (error) {
+        log("Share failed: " +
+          ((error && error.message) || String(error)));
+        return;
+      }
+
+      Promise.resolve(sharePromise).then(() => {
+        log("Share completed: " + name);
+      }).catch(error => {
+        if (error && error.name === "AbortError") {
+          log("Share cancelled: " + name);
+          return;
+        }
+        log("Share failed: " +
+          ((error && error.message) || String(error)));
+      });
+    });
+    actions.appendChild(share);
+  }
+
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.className = "secondary";
+  dismiss.textContent = "Dismiss";
+  dismiss.addEventListener("click", () => {
+    clearExportActionPanel();
+    log("Export dismissed: " + name);
+  });
+  actions.appendChild(dismiss);
+
+  panel.appendChild(actions);
+  $("csv").parentElement.insertAdjacentElement("afterend", panel);
+  exportActionPanel = panel;
+  log("Export ready: " + name);
 }
 
 async function exportData(kind) {
+  const generation = ++exportGeneration;
+  clearExportActionPanel();
+
   if (!db) {
     log("Storage unavailable");
     return;
   }
 
+  log("Preparing " + kind + " export");
   try {
     const packets = await dbAll("packets");
     const track = await dbAll("track");
+    if (generation !== exportGeneration) return;
     const exportPackets = packets.map(point => enrichPacketEvidence({...point}));
 
     const prefix =
