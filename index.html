@@ -105,7 +105,24 @@ button.active-on { background: #197c55; color: white; }
 button:disabled { opacity: .45; }
 input[type="url"] { width:100%;padding:10px;border:1px solid #435764;
   border-radius:8px;background:#101820;color:white;margin:6px 0 8px; }
-#syncBadge { font-size:10px;color:#9aafbd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+#syncBadge {
+  display:flex; align-items:center; flex:0 0 32px; height:32px; min-width:0;
+  margin:3px 0; padding:0 9px; border:1px solid transparent; border-radius:7px;
+  font-size:14px; font-weight:650; line-height:18px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+#syncBadge.sync-badge--synced {
+  color:#e4ffef; background:#174c37; border-color:#358b63;
+}
+#syncBadge.sync-badge--uploading {
+  color:#e5f5ff; background:#164c70; border-color:#398ec2;
+}
+#syncBadge.sync-badge--pending {
+  color:#fff3d4; background:#594517; border-color:#bd9336;
+}
+#syncBadge.sync-badge--failed {
+  color:#ffe7ea; background:#642832; border-color:#c95363;
+}
 
 
 .actions {
@@ -283,23 +300,13 @@ button { padding:8px 7px; font-size:12px; }
 .heardItem span:first-child { overflow:hidden; text-overflow:ellipsis; }
 #heardNote { color:#9aafbd; font-size:10px; }
 #repeaterInfo { font-size:11px; color:#9aafbd; margin:3px 0; }
-#mapFilterRow { display:flex; align-items:center; gap:6px; flex:0 0 auto; margin:3px 0; }
-#mapFilterRow label { font-size:11px; color:#9aafbd; white-space:nowrap; }
-#mapRepeaterSearch, #repeaterSearch {
+#mapFilterRow { display:flex; align-items:center; gap:6px; flex:0 0 auto; min-width:0; margin:3px 0; }
+#repeaterSearch {
   min-width:0; border:1px solid #435764; border-radius:7px;
   background:#101820; color:#edf3f7; padding:5px 7px; font-size:16px; }
-#mapSearchBox { position:relative; flex:1; min-width:0; }
-#mapRepeaterSearch { width:100%; padding-right:40px; }
-#clearMapRepeaterSearch, #clearRepeaterSearch {
+#clearRepeaterSearch {
   min-height:32px; padding:4px 8px; background:#3b5362;
 }
-.suggestions {
-  position:absolute; z-index:1200; top:100%; left:0; right:0;
-  max-height:190px; overflow-y:auto; background:#172631;
-  border:1px solid #435764; border-radius:7px; box-shadow:0 4px 12px #0008;
-}
-.suggestions[hidden] { display:none; }
-.suggestions button { display:block; width:100%; text-align:left; border-radius:0; }
 #evidenceMode { display:flex; gap:3px; flex:0 0 auto; }
 #evidenceMode button { padding:5px 9px; font-size:11px; background:#314654; }
 #evidenceMode button.active { background:#2186c7; }
@@ -320,7 +327,7 @@ button { padding:8px 7px; font-size:12px; }
 .repeaterResultName { min-width:0; overflow:hidden; text-overflow:ellipsis; }
 .repeaterResultMeta { flex:0 0 auto; text-align:right; font-size:10px; line-height:1.4; }
 .repeaterSearchBar { display:flex; gap:6px; flex:0 0 auto; }
-#repeaterSearch { flex:1; min-height:38px; font-size:14px; }
+#repeaterSearch { flex:1; min-height:38px; font-size:16px; }
 #repeatersView .panel { display:flex; flex-direction:column; flex:1; min-height:0; }
 #repeatersCount { flex:0 0 auto; font-size:11px; color:#9aafbd; }
 #repeaterResultsNote { flex:0 0 auto; font-size:10px; color:#9aafbd; margin:3px 0; }
@@ -332,19 +339,12 @@ button { padding:8px 7px; font-size:12px; }
 #mapEvidenceNote { flex:0 0 auto; margin:0; font-size:10px; line-height:1.2;
   color:#9aafbd; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 #repeaterImport { width:100%; max-width:100%; font-size:12px; }
+#mapSelectedRepeater {
+  flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; font-size:11px; color:#c5d5df;
+}
+#clearSelectedRepeater { flex:0 0 auto; min-height:28px; padding:3px 8px; }
 @media(max-height:650px) { #heardList .heardItem:nth-child(n+3) { display:none; } header h1 {font-size:16px} }
-
-/* Prevent iPhone Safari zooming into search fields */
-#mapRepeaterSearch,
-#repeaterSearch {
-  font-size: 16px !important;
-  min-height: 36px;
-}
-
-/* Keep the mobile layout within the viewport */
-#mapSearchBox {
-  min-width: 0;
-}
 
 </style>
 </head>
@@ -405,15 +405,11 @@ button { padding:8px 7px; font-size:12px; }
 
   <div id="map"></div>
 
-  <div id="syncBadge">Sync: not configured</div>
+  <div id="syncBadge" class="sync-badge--pending" role="status" aria-live="polite">Server not configured</div>
   <div id="mapFilterRow">
-    <label for="mapRepeaterSearch">Repeater</label>
-    <div id="mapSearchBox">
-      <input id="mapRepeaterSearch" type="search" autocomplete="off"
-        placeholder="Search repeaters..." aria-label="Search repeaters to filter the map">
-      <div id="mapRepeaterSuggestions" class="suggestions" hidden></div>
-    </div>
-    <button id="clearMapRepeaterSearch" class="secondary" type="button" aria-label="Clear selected repeater">Clear</button>
+    <span id="mapSelectedRepeater" aria-live="polite">All receptions</span>
+    <button id="clearSelectedRepeater" class="secondary" type="button"
+      aria-label="Clear selected repeater" hidden>Clear</button>
   </div>
   <div id="evidenceMode" role="group" aria-label="Reception evidence filter">
     <button type="button" class="active" data-evidence-mode="both" aria-pressed="true">Both</button>
@@ -623,7 +619,6 @@ let sortedRepeaters = [];
 let evidenceMode = "both";
 const REPEATER_RADIUS_KM = 50;
 const REPEATER_RESULT_LIMIT = 50;
-const MAP_SUGGESTION_LIMIT = 8;
 const REPEATER_MARKER_LIMIT = 400;
 
 // Experimental: 1-byte path-hash matches are route candidates, not transmitter IDs.
@@ -893,14 +888,13 @@ function installRepeaterDirectory(entries) {
   );
   if (selectedRepeaterKey && !repeaterDirectory.has(selectedRepeaterKey)) {
     selectedRepeaterKey = "";
-    $("mapRepeaterSearch").value = "";
   }
+  updateMapSelectionLabel();
   $("repeaterSaved").textContent = String(repeaterDirectory.size);
   for (const point of currentSessionPackets) enrichPacketEvidence(point);
   rebuildObservationCounts();
   renderNodes();
   renderRepeaterResults($("repeaterSearch")?.value || "");
-  renderMapRepeaterSuggestions($("mapRepeaterSearch")?.value || "");
   renderRepeaterMarkers();
   renderPacketLayer();
   updateSelectionSummary();
@@ -973,27 +967,16 @@ function updateRepeaterResultCount(key) {
   if (repeater) item.lastElementChild.setAttribute("aria-label", repeater.name);
 }
 
-function renderMapRepeaterSuggestions(query) {
-  const box = $("mapRepeaterSuggestions");
-  if (!box) return;
-  const text = String(query || "").trim();
-  const matches = text ? filterRepeaters(text).slice(0, MAP_SUGGESTION_LIMIT) : [];
-  box.replaceChildren();
-  for (const repeater of matches) {
-    const option = document.createElement("button");
-    option.type = "button";
-    option.textContent = `${repeater.name} · ${repeater.key.slice(0, 8).toUpperCase()}`;
-    option.addEventListener("click", () => selectRepeater(repeater.key));
-    box.appendChild(option);
-  }
-  box.hidden = matches.length === 0;
+function updateMapSelectionLabel() {
+  const repeater = repeaterDirectory.get(selectedRepeaterKey);
+  $("mapSelectedRepeater").textContent = repeater?.name || "All receptions";
+  $("clearSelectedRepeater").hidden = !repeater;
 }
 
 function selectRepeater(key) {
   if (!repeaterDirectory.has(key)) return;
   selectedRepeaterKey = key;
-  $("mapRepeaterSearch").value = repeaterDirectory.get(key).name;
-  $("mapRepeaterSuggestions").hidden = true;
+  updateMapSelectionLabel();
   renderRepeaterResults($("repeaterSearch").value);
   renderPacketLayer();
   updateSelectionSummary();
@@ -1002,8 +985,7 @@ function selectRepeater(key) {
 
 function clearRepeaterSelection() {
   selectedRepeaterKey = "";
-  $("mapRepeaterSearch").value = "";
-  $("mapRepeaterSuggestions").hidden = true;
+  updateMapSelectionLabel();
   renderRepeaterResults($("repeaterSearch").value);
   renderPacketLayer();
   updateSelectionSummary();
@@ -2108,7 +2090,39 @@ async function newSession() {
 /* Server sync: only completed sessions, never raw live BLE streaming. */
 function syncState(message) {
   $("syncStatus").textContent = message;
-  $("syncBadge").textContent = "Sync: " + message;
+  const badge = $("syncBadge");
+  const detail = String(message || "");
+  const normalized = detail.toLowerCase();
+  const pending = Number($("pendingCount").textContent) || 0;
+  let state = "pending";
+  let label;
+
+  if (normalized.includes("failed")) {
+    state = "failed";
+    label = "Upload failed";
+  } else if (normalized.includes("uploading")) {
+    state = "uploading";
+    label = "Uploading";
+  } else if (normalized.includes("storage unavailable")) {
+    state = "failed";
+    label = "Storage unavailable";
+  } else if (!syncUrl.trim() || normalized.includes("not configured") ||
+      normalized.includes("set server url")) {
+    label = "Server not configured";
+  } else if (pending > 0) {
+    label = uploadToken ? "Pending upload" : "Pending upload · add token";
+  } else if (normalized === "synced" || normalized === "all synced") {
+    state = "synced";
+    label = "All synced";
+  } else {
+    label = "No pending uploads";
+  }
+
+  if (pending > 0) {
+    label += ` · ${pending} pending session${pending === 1 ? "" : "s"}`;
+  }
+  badge.className = `sync-badge--${state}`;
+  badge.textContent = label;
 }
 function serverBase() {
   const u = new URL(syncUrl.trim());
@@ -2128,6 +2142,7 @@ async function pendingIds() {
 async function refreshPending() {
   const ids=await pendingIds();
   $("pendingCount").textContent=ids.length;
+  syncState($("syncStatus").textContent);
   return ids;
 }
 function dbAllFor(store,id) {
@@ -2148,8 +2163,8 @@ async function syncPending() {
   if (syncBusy) return;
   if (!db) { syncState("Storage unavailable"); return; }
   const ids=await refreshPending();
-  if (!ids.length) {syncState("All synced");return;}
-  if (!syncUrl.trim()) {syncState("Pending - set server URL");return;}
+  if (!syncUrl.trim()) {syncState("Server not configured");return;}
+  if (!ids.length) {syncState("No pending uploads");return;}
   if (!uploadToken) {syncState("Pending - enter token");return;}
   syncBusy=true;
   try {
@@ -2184,8 +2199,10 @@ async function syncPending() {
       await deleteMeta("pending:"+id);
       await dbPut("meta",{key:"synced:"+id,value:new Date().toISOString()});
       log("Synced session "+id);
+      await refreshPending();
     }
-    syncState("Synced");
+    await refreshPending();
+    syncState("All synced");
   } catch(e) {
     syncState("Pending - upload failed");
     log("Sync error: "+e.message);
@@ -2279,21 +2296,7 @@ $("clearRepeaterSearch").onclick = () => {
   renderRepeaterResults("");
   $("repeaterSearch").focus();
 };
-$("mapRepeaterSearch").addEventListener("input", () => {
-  renderMapRepeaterSuggestions($("mapRepeaterSearch").value);
-});
-$("mapRepeaterSearch").addEventListener("focus", () => {
-  renderMapRepeaterSuggestions($("mapRepeaterSearch").value);
-});
-$("mapRepeaterSearch").addEventListener("keydown", event => {
-  if (event.key === "Enter") {
-    const first = $("mapRepeaterSuggestions").firstElementChild;
-    if (first) first.click();
-  } else if (event.key === "Escape") {
-    $("mapRepeaterSuggestions").hidden = true;
-  }
-});
-$("clearMapRepeaterSearch").onclick = clearRepeaterSelection;
+$("clearSelectedRepeater").onclick = clearRepeaterSelection;
 document.querySelectorAll("[data-evidence-mode]").forEach(button => {
   button.onclick = () => {
     evidenceMode = button.dataset.evidenceMode;
