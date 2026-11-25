@@ -434,7 +434,7 @@ button { padding:8px 7px; font-size:12px; }
     <div class="row"><span>Sync status</span><b id="syncStatus">Not configured</b></div>
     <div class="row"><span>Pending sessions</span><b id="pendingCount">0</b></div>
     <div class="actions">
-      <button id="reconnect" class="secondary">Reconnect Wio</button>
+      <button id="reconnect" class="secondary">Reconnect Node</button>
       <button id="newSession" class="danger">
         New session
       </button>
@@ -978,7 +978,7 @@ async function connect(reuse = false) {
 
       if (!device) {
         throw new Error(
-          "No authorised device. Use Connect Wio."
+          "No authorised device. Use Connect Node."
         );
       }
     } else {
@@ -1645,7 +1645,7 @@ function updateButtons() {
   const connected = Boolean(device?.gatt?.connected);
   const ble = $("connect");
   ble.textContent = bleBusy ? "Connecting..." :
-    connected ? "Disconnect Wio" : "Connect Wio";
+    connected ? "Disconnect Node" : "Connect Node";
   ble.className = connected ? "active-stop" : "";
   ble.disabled = bleBusy;
 
@@ -1670,7 +1670,7 @@ $("connect").onclick = () => {
 };
 $("reconnect").onclick = () => {
   if (device?.gatt?.connected) {
-    log("Wio is already connected");
+    log("Node is already connected");
   } else {
     connect(true);
   }
