@@ -952,10 +952,13 @@ function addRow(point) {
 
 /* Bluetooth */
 
-async function connect(reuse = false) {
+
+async function connect(reuse = true) {
   if (bleBusy) return;
+
   bleBusy = true;
   updateButtons();
+
   try {
     if (!navigator.bluetooth) {
       throw new Error("Web Bluetooth unavailable");
@@ -963,41 +966,36 @@ async function connect(reuse = false) {
 
     $("bleStatus").textContent = "Connecting...";
 
+    // First try the previously selected node.
     if (reuse && device) {
-      // Reuse selected device.
+      log("Trying previous node");
+
     } else if (
       reuse &&
       typeof navigator.bluetooth.getDevices === "function"
     ) {
       const devices = await navigator.bluetooth.getDevices();
 
-      device = devices.find(
-        d => d.name &&
-        d.name.toLowerCase().includes("mesh")
-      ) || devices[0];
+      device = devices.find(d =>
+        d.name && d.name.toLowerCase().includes("mesh")
+      ) || devices[0] || null;
+    }
 
-      if (!device) {
-        throw new Error(
-          "No authorised device. Use Connect Node."
-        );
-      }
-    } else {
+    // If no previous node is available, open the selector.
+    if (!device) {
+      log("Opening Bluetooth device selector");
+
       device = await navigator.bluetooth.requestDevice({
         filters: [{ services: [SERVICE] }]
       });
     }
 
-    if (!device.gatt.connected) {
-      const server = await device.gatt.connect();
-      const svc = await server.getPrimaryService(SERVICE);
+    const server = device.gatt.connected
+      ? device.gatt
+      : await device.gatt.connect();
 
-      rxChar = await svc.getCharacteristic(RX);
-    } else if (!rxChar) {
-      const svc = await device.gatt
-        .getPrimaryService(SERVICE);
-
-      rxChar = await svc.getCharacteristic(RX);
-    }
+    const svc = await server.getPrimaryService(SERVICE);
+    rxChar = await svc.getCharacteristic(RX);
 
     rxChar.removeEventListener(
       "characteristicvaluechanged",
@@ -1029,11 +1027,19 @@ async function connect(reuse = false) {
   } catch (error) {
     $("bleStatus").textContent = "Failed";
     log("BLE: " + error.message);
+
+    // Allow a fresh device selection on the next attempt.
+    if (!device?.gatt?.connected) {
+      device = null;
+      rxChar = null;
+    }
+
   } finally {
     bleBusy = false;
     updateButtons();
   }
 }
+
 
 function onDisconnect() {
   $("bleStatus").textContent = "Disconnected";
