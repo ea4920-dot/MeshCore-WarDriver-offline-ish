@@ -955,17 +955,58 @@ function addRow(point) {
 
 // A failed remembered-device connection offers a fresh picker on the next tap.
 let forcePickerNext = false;
+let reconnectTimer = null;
+let reconnectAttempts = 0;
+let reconnectEnabled = false;
+const RECONNECT_DELAYS_MS = [1000, 2000, 4000, 8000, 16000];
 
-async function connect(reuse = true) {
+function cancelReconnect() {
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+}
+
+function scheduleReconnect() {
+  if (!reconnectEnabled || reconnectTimer !== null) return;
+  if (reconnectAttempts >= RECONNECT_DELAYS_MS.length) {
+    $("bleStatus").textContent = "Disconnected";
+    log("Automatic reconnect stopped after 5 attempts. Tap Reconnect Node to try again.");
+    updateButtons();
+    return;
+  }
+
+  const attempt = reconnectAttempts + 1;
+  const delay = RECONNECT_DELAYS_MS[reconnectAttempts++];
+  $("bleStatus").textContent = `Reconnecting ${attempt}/${RECONNECT_DELAYS_MS.length}...`;
+  log(`BLE reconnect attempt ${attempt}/${RECONNECT_DELAYS_MS.length} in ${delay / 1000}s`);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect(true, true);
+  }, delay);
+  updateButtons();
+}
+
+async function connect(reuse = true, automatic = false) {
   if (bleBusy) return;
+  if (!automatic) {
+    cancelReconnect();
+    reconnectAttempts = 0;
+  }
   bleBusy = true;
   updateButtons();
   let chosen = null;
   try {
-    if (!navigator.bluetooth) throw new Error("Web Bluetooth unavailable");
+    if (!navigator.bluetooth) {
+      throw new Error(
+        window.isSecureContext
+          ? "Web Bluetooth is unavailable in this browser. Try Bluefy on iOS or a Web Bluetooth-capable Chromium browser."
+          : "Web Bluetooth requires HTTPS or localhost, and a browser that supports Web Bluetooth."
+      );
+    }
     $("bleStatus").textContent = "Connecting...";
 
-    if (reuse && !forcePickerNext) {
+    if (reuse && (automatic || !forcePickerNext)) {
       if (device) chosen = device;
       else if (typeof navigator.bluetooth.getDevices === "function") {
         try {
@@ -980,10 +1021,12 @@ async function connect(reuse = true) {
     if (!chosen) {
       log("Opening Bluetooth device selector");
       chosen = await navigator.bluetooth.requestDevice({
-        filters: [{ services: [SERVICE] }]
+        acceptAllDevices: true,
+        optionalServices: [SERVICE]
       });
     }
 
+    if (!chosen.gatt) throw new Error("Selected device does not support Bluetooth LE");
     const server = chosen.gatt.connected ? chosen.gatt : await chosen.gatt.connect();
     const svc = await server.getPrimaryService(SERVICE);
     const characteristic = await svc.getCharacteristic(RX);
@@ -994,6 +1037,9 @@ async function connect(reuse = true) {
     await characteristic.startNotifications();
     device = chosen;
     rxChar = characteristic;
+    reconnectEnabled = true;
+    reconnectAttempts = 0;
+    cancelReconnect();
     forcePickerNext = false;
     $("bleStatus").textContent = device.name || "Connected";
     log("BLE notifications active");
@@ -1004,10 +1050,15 @@ async function connect(reuse = true) {
     // Keep the remembered device; the next tap can use the picker instead.
     forcePickerNext = true;
     if (chosen?.gatt?.connected) {
-      try { chosen.gatt.disconnect(); } catch (_) {}
+      try {
+        chosen.gatt.disconnect();
+      } catch (disconnectError) {
+        log("BLE cleanup error: " + (disconnectError?.message || String(disconnectError)));
+      }
     }
     rxChar = null;
-    log("Tap Connect Node again to choose a device manually");
+    if (automatic) scheduleReconnect();
+    else log("Tap Connect Node again to choose a device manually");
   } finally {
     bleBusy = false;
     updateButtons();
@@ -1015,10 +1066,13 @@ async function connect(reuse = true) {
 }
 
 function onDisconnect() {
-  $("bleStatus").textContent = "Disconnected";
   rxChar = null;
   log("BLE disconnected");
-  updateButtons();
+  if (reconnectEnabled) scheduleReconnect();
+  else {
+    $("bleStatus").textContent = "Disconnected";
+    updateButtons();
+  }
 }
 
 function onBLE(event) {
@@ -1622,9 +1676,11 @@ async function syncPending() {
 /* One-button connection and recording controls */
 function updateButtons() {
   const connected = Boolean(device?.gatt?.connected);
+  const reconnectPending = reconnectTimer !== null;
   const ble = $("connect");
   ble.textContent = bleBusy ? "Connecting..." :
-    connected ? "Disconnect Node" : "Connect Node";
+    connected ? "Disconnect Node" :
+    reconnectPending ? "Cancel reconnect" : "Connect Node";
   ble.className = connected ? "active-stop" : "";
   ble.disabled = bleBusy;
 
@@ -1642,7 +1698,17 @@ function updateButtons() {
 
 $("connect").onclick = () => {
   if (device?.gatt?.connected) {
+    reconnectEnabled = false;
+    reconnectAttempts = 0;
+    cancelReconnect();
     device.gatt.disconnect();
+  } else if (reconnectTimer !== null) {
+    reconnectEnabled = false;
+    reconnectAttempts = 0;
+    cancelReconnect();
+    $("bleStatus").textContent = "Disconnected";
+    log("Automatic reconnect cancelled");
+    updateButtons();
   } else {
     connect(true);
   }
