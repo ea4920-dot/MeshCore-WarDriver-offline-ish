@@ -4,7 +4,7 @@
 
 MeshCore WarDriver connects to a compatible MeshCore companion node using Web Bluetooth, records received radio packets alongside GPS coordinates and signal measurements, and displays reception observations on an interactive map. It is designed for mobile wardriving and can synchronise completed sessions to a separate coverage-map server.
 
-**Current documented version:** v0.7.5
+**Current documented version:** v0.7.7
 
 > WarDriver measures reception at your own radio. Its *likely last-hop* repeater matches are estimates based on MeshCore flood-routing identifiers, not proof of direct RF reception or continuous coverage.
 
@@ -85,8 +85,11 @@ In **Settings â†’ Map server synchronisation**:
 2. Enter the upload token provided by the server administrator.
 3. Stop a recording to queue/synchronise the completed session, or use **Retry pending uploads**.
 4. Check the sync indicator for uploading, pending, completed, or failed status.
+5. Use **Session Manager** to find any locally saved session, verify its packet and track counts against the server, or upload/retry it individually. Session discovery includes recordings without a pending-upload marker.
 
 The upload API uses `POST /api/sessions` with bearer-token authentication. A compatible self-hosted Docker map server can combine historical sessions and generate RSSI heatmaps and repeater-specific coverage comparisons. The server needs its **own repeater directory** for centralised identification; importing repeaters into WarDriver does not automatically import them to the server.
+
+Session verification uses `GET /api/sessions`. The current server returns at most 500 sessions, so an absent ID cannot be confirmed missing when that list is full. WarDriver reports this limit rather than treating the session as missing. A local synced marker alone is not considered server verification.
 
 **Security:** Do not commit upload tokens or private recordings to a public GitHub repository. Use HTTPS for the public upload endpoint.
 
@@ -126,4 +129,4 @@ You can optionally run your own **MeshCore Map Server** using Docker to combine 
 
 ## Project status
 
-v0.7.5 is the currently documented WarDriver version. Its Bluetooth, GPS, recording, heard-only repeater selection, and export workflows have been exercised during development; behaviour still depends on the browser, Bluetooth bridge, and companion firmware. Server synchronisation should be tested against each deployment before relying on automatic backups.
+v0.7.7 is the currently documented WarDriver version. Its Bluetooth, GPS, recording, heard-only repeater selection, session management, and export workflows have been exercised during development; behaviour still depends on the browser, Bluetooth bridge, and companion firmware. Server synchronisation should be tested against each deployment before relying on automatic backups.

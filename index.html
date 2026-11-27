@@ -5,7 +5,7 @@
 <meta name="viewport"
  content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#101820">
-<title>MeshCore WarDriver v0.7.6</title>
+<title>MeshCore WarDriver v0.7.7</title>
 
 <!-- Leaflet CSS: load before application styles -->
 <link rel="stylesheet"
@@ -358,6 +358,12 @@ button { padding:8px 7px; font-size:12px; }
   white-space:nowrap; font-size:11px; color:#c5d5df;
 }
 #clearSelectedRepeater { flex:0 0 auto; min-height:28px; padding:3px 8px; }
+#sessionList { display:grid; gap:8px; }
+.session-card { padding:9px; border:1px solid #344956; border-radius:9px; background:#172631; }
+.session-card h4 { margin:0 0 5px; font-size:13px; overflow-wrap:anywhere; }
+.session-card .row { font-size:11px; }
+.session-card .actions { margin-top:7px; }
+.session-card .actions button { flex:1 1 125px; }
 @media(max-height:650px) { #heardList .heardItem:nth-child(n+3) { display:none; } header h1 {font-size:16px} }
 
 </style>
@@ -368,7 +374,7 @@ button { padding:8px 7px; font-size:12px; }
 <header>
   <div>
     <h1>MeshCore WarDriver</h1>
-    <small>v0.7.6 | Repeater Filter Refinement </small>
+    <small>v0.7.7 | Session Manager </small>
   </div>
   <span id="statePill" class="pill">Not recording</span>
 </header>
@@ -535,6 +541,17 @@ button { padding:8px 7px; font-size:12px; }
   </div>
 
   <div class="panel">
+    <h3>Session Manager</h3>
+    <p class="foot">Saved sessions remain on this device. Server status is based on a direct session-list check, not a local synced marker.</p>
+    <div class="actions">
+      <button id="refreshSessions" class="secondary" type="button">Refresh sessions</button>
+      <button id="verifyAllSessions" class="secondary" type="button">Verify all</button>
+    </div>
+    <p id="sessionManagerStatus" class="foot" role="status" aria-live="polite">Loading saved sessions...</p>
+    <div id="sessionList" aria-live="polite"></div>
+  </div>
+
+  <div class="panel">
     <h3>Diagnostics</h3>
     <div class="row">
       <span>BLE notifications</span>
@@ -679,6 +696,8 @@ let recordingStopBusy = false;
 let bleBusy = false;
 let writeJobs = new Set();
 let syncBusy = false;
+let managerUploadingId = null;
+let managerVerifying = false;
 let completedSession = false;
 let syncUrl = readLocalStorage(SYNC_URL_KEY) || "";
 let uploadToken = savedUploadToken ||
@@ -832,6 +851,12 @@ async function initSession() {
         value: sessionId
       });
     }
+    const [pendingCurrent,syncedCurrent,ackCurrent]=await Promise.all([
+      dbGet("meta","pending:"+sessionId),
+      dbGet("meta","synced:"+sessionId),
+      dbGet("meta","upload_ack:"+sessionId)
+    ]);
+    completedSession=Boolean(pendingCurrent||syncedCurrent||ackCurrent);
 
     const [packets, track] = await Promise.all([
       dbAll("packets"),
@@ -840,6 +865,7 @@ async function initSession() {
 
     packetCount = packets.length;
     trackCount = track.length;
+    if(packetCount>0||trackCount>0) completedSession=true;
 
     noGps = packets.filter(p => p.lat == null).length;
 
@@ -849,6 +875,7 @@ async function initSession() {
       installRepeaterDirectory(savedDirectory.value);
     }
     await refreshPending();
+    await refreshSessionManager();
 
     // Enrich copies for the UI. Never rewrite the original IndexedDB records.
     currentSessionPackets = packets.map(point => enrichPacketEvidence({...point}));
@@ -1936,7 +1963,7 @@ function stopGPS() {
 
 function startRecord() {
   if (recording || recordingStartPending || recordingStartBusy ||
-      recordingStopBusy || gpsStopPromise) return;
+      recordingStopBusy || gpsStopPromise || managerUploadingId!==null) return;
   if (syncBusy) {log("Wait for sync to finish");return;}
   if (!db) {
     log("Storage not ready");
@@ -1958,6 +1985,10 @@ function startRecord() {
 
 async function beginRecordingWithGPS() {
   if (!recordingStartPending || recordingStartBusy || !hasFreshGPSFix()) return;
+  if (managerUploadingId!==null) {
+    cancelRecordingStart();
+    return;
+  }
   recordingStartBusy = true;
   updateButtons();
   try {
@@ -2055,6 +2086,7 @@ async function stopAndSync() {
     await new Promise(resolve => setTimeout(resolve, 150));
     await dbPut("meta", {key:"pending:" + completedId, value:completedId});
     await refreshPending();
+    await refreshSessionManager();
     await syncPending();
   } catch(e) {
     syncState("Pending - " + e.message);
@@ -2338,7 +2370,7 @@ async function newSession() {
   if (!confirm(message)) return;
 
   if (recording || recordingStartPending || recordingStartBusy ||
-      recordingStopBusy || syncBusy) {
+      recordingStopBusy || syncBusy || managerUploadingId!==null) {
     alert("Stop recording and wait for GPS or sync before creating a new session.");
     return;
   }
@@ -2351,6 +2383,7 @@ async function newSession() {
     });
 
     sessionId = nextSessionId;
+    completedSession = false;
 
     packetCount = 0;
     trackCount = 0;
@@ -2373,6 +2406,7 @@ async function newSession() {
       sessionId.slice(0, 19).replace("T", " ");
 
     log("New session started");
+    await refreshSessionManager();
 
   } catch (error) {
     log("New session error: " + error.message);
@@ -2445,6 +2479,406 @@ function dbAllFor(store,id) {
     req.onerror=()=>reject(req.error);
   });
 }
+function dbCountFor(store,id) {
+  return new Promise((resolve,reject)=>{
+    const req=db.transaction(store).objectStore(store).index("session").count(id);
+    req.onsuccess=()=>resolve(req.result);
+    req.onerror=()=>reject(req.error);
+  });
+}
+function indexedSessionIds(store) {
+  return new Promise((resolve,reject)=>{
+    const ids=new Set();
+    const req=db.transaction(store).objectStore(store).index("session").openKeyCursor();
+    req.onsuccess=()=>{
+      const cursor=req.result;
+      if(!cursor) {resolve([...ids]);return;}
+      if(typeof cursor.key==="string") ids.add(cursor.key);
+      cursor.continue();
+    };
+    req.onerror=()=>reject(req.error);
+  });
+}
+async function sessionCatalog() {
+  const [packetIds,trackIds,metadata]=await Promise.all([
+    indexedSessionIds("packets"),indexedSessionIds("track"),
+    new Promise((resolve,reject)=>{
+      const req=db.transaction("meta").objectStore("meta").getAll();
+      req.onsuccess=()=>resolve(req.result);
+      req.onerror=()=>reject(req.error);
+    })
+  ]);
+  const ids=new Set([...packetIds,...trackIds]);
+  const pending=new Map(),synced=new Map(),acks=new Map(),checks=new Map();
+  for(const item of metadata) {
+    if(item.key==="current" && typeof item.value==="string") ids.add(item.value);
+    else if(item.key.startsWith("pending:")) {
+      const id=typeof item.value==="string"?item.value:item.key.slice(8);
+      ids.add(id);pending.set(id,item.value);
+    } else if(item.key.startsWith("synced:")) {
+      const id=item.key.slice(7);ids.add(id);synced.set(id,item.value);
+    } else if(item.key.startsWith("upload_ack:")) {
+      const id=item.key.slice(11);ids.add(id);acks.set(id,item.value);
+    } else if(item.key.startsWith("server_check:")) {
+      checks.set(item.key.slice(13),item.value);
+    }
+  }
+  const sessions=await Promise.all([...ids].map(async id=>{
+    const [packets,track]=await Promise.all([
+      dbCountFor("packets",id),dbCountFor("track",id)
+    ]);
+    return {id,packets,track,pending:pending.has(id),synced:synced.has(id),
+      ack:acks.get(id)||null,check:checks.get(id)||null};
+  }));
+  sessions.sort((a,b)=>{
+    const ta=Date.parse(a.id),tb=Date.parse(b.id);
+    const validA=Number.isFinite(ta),validB=Number.isFinite(tb);
+    if(validA&&validB&&ta!==tb) return tb-ta;
+    if(validA!==validB) return validA?-1:1;
+    return b.id.localeCompare(a.id);
+  });
+  return sessions;
+}
+const sessionVerification=new Map();
+function formattedSessionDate(id) {
+  const date=new Date(id);
+  return Number.isNaN(date.getTime())?"Date unavailable":date.toLocaleString();
+}
+function activeSession(id) {
+  return id===sessionId && (recording || recordingStartPending ||
+    recordingStartBusy || (!completedSession&&packetCount===0&&trackCount===0));
+}
+function usableServerBase() {
+  try { return serverBase(); } catch { return ""; }
+}
+function verificationFor(session) {
+  const result=sessionVerification.get(session.id)||session.check;
+  const base=usableServerBase();
+  if(!result || result.serverBase!==base ||
+      result.localPackets!==session.packets || result.localTrack!==session.track) {
+    return {status:"Not checked"};
+  }
+  return result;
+}
+function appendSessionRow(card,label,value) {
+  const row=document.createElement("div");
+  row.className="row";
+  const name=document.createElement("span");
+  name.textContent=label;
+  const content=document.createElement("b");
+  content.textContent=String(value);
+  row.append(name,content);
+  card.append(row);
+}
+function renderSessionManager(sessions) {
+  const list=$("sessionList");
+  list.replaceChildren();
+  $("sessionManagerStatus").textContent=
+    `${sessions.length} locally saved session${sessions.length===1?"":"s"}`;
+  if(!sessions.length) {
+    const empty=document.createElement("p");
+    empty.className="foot";
+    empty.textContent="No saved sessions found.";
+    list.append(empty);
+    return;
+  }
+  for(const session of sessions) {
+    const card=document.createElement("article");
+    card.className="session-card";
+    const title=document.createElement("h4");
+    title.textContent=`${session.id} · ${formattedSessionDate(session.id)}`;
+    card.append(title);
+    appendSessionRow(card,"Radio packets",session.packets);
+    appendSessionRow(card,"GPS track points",session.track);
+    const localStatus=managerUploadingId===session.id?"Uploading":
+      session.pending?"Upload pending":
+      session.ack?.status==="already_exists"?"Already exists; verification pending":
+      session.ack?"Upload acknowledged; verification pending":
+      session.synced?"Synced marker (not server-verified)":"Not uploaded";
+    appendSessionRow(card,"Local upload status",localStatus);
+    const check=verificationFor(session);
+    appendSessionRow(card,"Server verification",check.status);
+    if(Number.isInteger(check.serverPackets)&&Number.isInteger(check.serverTrack)) {
+      appendSessionRow(card,"Counts (local / server)",
+        `${session.packets}/${check.serverPackets} packets · ${session.track}/${check.serverTrack} track`);
+    }
+    if(check.checkedAt) appendSessionRow(card,"Last checked",
+      new Date(check.checkedAt).toLocaleString());
+    const actions=document.createElement("div");
+    actions.className="actions";
+    const verify=document.createElement("button");
+    verify.type="button";
+    verify.className="secondary";
+    verify.textContent="Verify";
+    verify.disabled=managerVerifying||syncBusy||managerUploadingId!==null;
+    verify.onclick=()=>void verifyOneSession(session.id);
+    const upload=document.createElement("button");
+    upload.type="button";
+    upload.textContent=session.ack?"Retry verification":
+      check.status==="Verification unavailable"||
+      check.status.startsWith("Not confirmed")?
+      "Manual upload (unverified)":"Upload / Retry";
+    upload.disabled=managerVerifying||syncBusy||managerUploadingId!==null||
+      activeSession(session.id);
+    if(activeSession(session.id)) upload.title="Stop recording and complete this session before uploading.";
+    upload.onclick=()=>void uploadManagedSession(session.id);
+    actions.append(verify,upload);
+    card.append(actions);
+    list.append(card);
+  }
+}
+async function refreshSessionManager() {
+  if(!db) return;
+  const sessions=await sessionCatalog();
+  for(const session of sessions) {
+    if(session.check && session.check.serverBase===usableServerBase() &&
+        session.check.localPackets===session.packets &&
+        session.check.localTrack===session.track) {
+      sessionVerification.set(session.id,session.check);
+    }
+  }
+  renderSessionManager(sessions);
+}
+function serverRowsFromResponse(data) {
+  const rows=Array.isArray(data)?data:data?.sessions;
+  if(!Array.isArray(rows) || rows.some(row=>!row || typeof row!=="object" ||
+      typeof row.id!=="string")) {
+    throw new Error("Invalid session list response");
+  }
+  return rows;
+}
+async function fetchServerSessions(base=serverBase()) {
+  const headers=uploadToken?{"Authorization":"Bearer "+uploadToken}:{};
+  const response=await fetch(base+"/api/sessions",{
+    method:"GET",headers,cache:"no-store"
+  });
+  if(!response.ok) throw new Error("HTTP "+response.status);
+  return serverRowsFromResponse(await response.json());
+}
+function serverEntryFor(rows,id) {
+  return rows.find(row=>row.id===id)||null;
+}
+function classifyServerEntry(entry,localPackets,localTrack) {
+  if(!entry) return {status:"Missing"};
+  const packets=Number(entry.packets),track=Number(entry.track);
+  if(!Number.isInteger(packets)||packets<0||!Number.isInteger(track)||track<0) {
+    return {status:"Verification unavailable"};
+  }
+  return {status:packets===localPackets&&track===localTrack?
+    "Verified":"Count mismatch",serverPackets:packets,serverTrack:track};
+}
+async function recordVerification(id,localPackets,localTrack,result,base) {
+  const value={...result,localPackets,localTrack,serverBase:base,
+    checkedAt:new Date().toISOString()};
+  sessionVerification.set(id,value);
+  await dbPut("meta",{key:"server_check:"+id,value});
+  return value;
+}
+async function markSessionVerified(id) {
+  await deleteMeta("pending:"+id);
+  await deleteMeta("upload_ack:"+id);
+  await dbPut("meta",{key:"synced:"+id,value:new Date().toISOString()});
+  await refreshPending();
+}
+async function setSessionVerificationUnavailable(id,message) {
+  const counts=await Promise.all([
+    dbCountFor("packets",id),dbCountFor("track",id)
+  ]);
+  const value={status:"Verification unavailable",localPackets:counts[0],
+    localTrack:counts[1],serverBase:usableServerBase(),detail:message,
+    checkedAt:new Date().toISOString()};
+  sessionVerification.set(id,value);
+  await dbPut("meta",{key:"server_check:"+id,value});
+}
+async function verifyOneSession(id) {
+  if(managerVerifying||syncBusy||managerUploadingId!==null) return;
+  managerVerifying=true;
+  try {
+    const base=serverBase();
+    const [rows,packets,track]=await Promise.all([
+      fetchServerSessions(base),dbCountFor("packets",id),dbCountFor("track",id)
+    ]);
+    const result=classifyServerEntry(serverEntryFor(rows,id),packets,track);
+    if(result.status==="Missing"&&rows.length>=500) {
+      result.status="Not confirmed — server list limit";
+    }
+    await recordVerification(id,packets,track,result,base);
+    if(result.status==="Verified") await markSessionVerified(id);
+    $("sessionManagerStatus").textContent=`Verification complete for ${id}`;
+  } catch(error) {
+    await setSessionVerificationUnavailable(id,error.message);
+    $("sessionManagerStatus").textContent=`Verification unavailable: ${error.message}`;
+  } finally {
+    managerVerifying=false;
+    await refreshSessionManager();
+  }
+}
+async function verifyAllSessions() {
+  if(managerVerifying||syncBusy||managerUploadingId!==null) return;
+  managerVerifying=true;
+  try {
+    const base=serverBase();
+    const sessions=await sessionCatalog();
+    if(!sessions.length) {
+      renderSessionManager(sessions);
+      return;
+    }
+    const rows=await fetchServerSessions(base);
+    for(const session of sessions) {
+      const result=classifyServerEntry(
+        serverEntryFor(rows,session.id),session.packets,session.track);
+      if(result.status==="Missing"&&rows.length>=500) {
+        result.status="Not confirmed — server list limit";
+      }
+      await recordVerification(session.id,session.packets,session.track,result,base);
+      if(result.status==="Verified") await markSessionVerified(session.id);
+    }
+    $("sessionManagerStatus").textContent=
+      `Checked ${sessions.length} session${sessions.length===1?"":"s"} using one server-list request`;
+  } catch(error) {
+    const sessions=await sessionCatalog();
+    await Promise.all(sessions.map(session=>
+      setSessionVerificationUnavailable(session.id,error.message)));
+    $("sessionManagerStatus").textContent=`Verification unavailable: ${error.message}`;
+  } finally {
+    managerVerifying=false;
+    await refreshSessionManager();
+  }
+}
+function uploadPayload(id,packets,track) {
+  return {session_id:id,source:"WarDriver-v0.7.7",
+    packets:packets.map(({
+      id:localId,session,raw_packet_hex,advertisement_public_key,
+      advertisement_signature_verified,candidate_repeater_keys,
+      candidate_repeater_names,identification_evidence,evidence_class,
+      direct_repeater_key,likely_last_hop_key,last_hop_hash,
+      last_hop_candidates,...rest
+    })=>({...rest,node_id:rest.node_key||null})),
+    track:track.map(({id:localId,session,...rest})=>rest)};
+}
+async function postSession(id,packets,track,base=serverBase()) {
+  const response=await fetch(base+"/api/sessions",{
+    method:"POST",
+    headers:{"Content-Type":"application/json",
+      "Authorization":"Bearer "+uploadToken},
+    body:JSON.stringify(uploadPayload(id,packets,track)),
+    cache:"no-store"
+  });
+  if(!response.ok) throw new Error("HTTP "+response.status);
+  const result=await response.json();
+  if(result.status!=="saved"&&result.status!=="already_exists") {
+    throw new Error("Unexpected server acknowledgement");
+  }
+  return result.status;
+}
+async function finishPostWithVerification(id,localPackets,localTrack,ackStatus,base) {
+  await dbPut("meta",{key:"upload_ack:"+id,value:{
+    status:ackStatus,at:new Date().toISOString()
+  }});
+  try {
+    const rows=await fetchServerSessions(base);
+    let result=classifyServerEntry(serverEntryFor(rows,id),localPackets,localTrack);
+    if(result.status==="Missing"&&rows.length>=500) {
+      result.status="Not confirmed — server list limit";
+    } else if(result.status==="Missing") {
+      result.status="Verification unavailable";
+    }
+    await recordVerification(id,localPackets,localTrack,result,base);
+    if(result.status==="Verified") await markSessionVerified(id);
+    return result;
+  } catch(error) {
+    await setSessionVerificationUnavailable(id,error.message);
+    return {status:"Verification unavailable",detail:error.message};
+  }
+}
+async function attemptSessionUpload(id,{manual=false,knownRows=null,base=serverBase()}={}) {
+  if(activeSession(id)) throw new Error("The current active session cannot be uploaded.");
+  const [localPackets,localTrack]=await Promise.all([
+    dbCountFor("packets",id),dbCountFor("track",id)
+  ]);
+  const previousAck=await dbGet("meta","upload_ack:"+id);
+  let rows=knownRows;
+  let unverifiedReason="";
+  if(!rows) {
+    try { rows=await fetchServerSessions(base); }
+    catch(error) {
+      await setSessionVerificationUnavailable(id,error.message);
+      if(!manual) {
+        return {status:"Verification unavailable"};
+      }
+      unverifiedReason=`Server verification failed (${error.message}).`;
+    }
+  }
+  if(rows) {
+    const existing=serverEntryFor(rows,id);
+    if(existing) {
+      const result=classifyServerEntry(existing,localPackets,localTrack);
+      await recordVerification(id,localPackets,localTrack,result,base);
+      if(result.status==="Verified") {
+        await markSessionVerified(id);
+        return result;
+      }
+      if(result.status==="Count mismatch") return result;
+      unverifiedReason="Server returned this ID with unreadable counts.";
+    } else if(rows.length>=500) {
+      unverifiedReason="The server list reached its 500-session limit; the ID is not confirmed.";
+      await recordVerification(id,localPackets,localTrack,{
+        status:"Not confirmed — server list limit"
+      },base);
+      if(!manual) return {status:"Not confirmed — server list limit"};
+    } else {
+      await recordVerification(id,localPackets,localTrack,{status:"Missing"},base);
+    }
+  }
+  const confirmedMissing=manual&&Array.isArray(rows)&&rows.length<500&&
+    !serverEntryFor(rows,id);
+  if(previousAck&&!confirmedMissing) {
+    const result={status:rows?.length>=500?
+      "Not confirmed — server list limit":"Verification unavailable"};
+    await recordVerification(id,localPackets,localTrack,result,base);
+    return result;
+  }
+  if(!uploadToken) throw new Error("Upload token missing. Set the token in Settings first.");
+  if(unverifiedReason) {
+    if(!manual) return {status:"Verification unavailable"};
+    if(!confirm(`${unverifiedReason}\n\nAttempt a manual upload without confirming whether this session already exists?`)) {
+      return {status:"Verification unavailable"};
+    }
+  }
+  await dbPut("meta",{key:"pending:"+id,value:id});
+  await refreshPending();
+  const [packets,track]=await Promise.all([
+    dbAllFor("packets",id),dbAllFor("track",id)
+  ]);
+  const ackStatus=await postSession(id,packets,track,base);
+  const result=await finishPostWithVerification(
+    id,localPackets,localTrack,ackStatus,base);
+  await refreshSessionManager();
+  return result;
+}
+async function uploadManagedSession(id) {
+  if(managerVerifying||managerUploadingId!==null||syncBusy) return;
+  if(activeSession(id)) {
+    $("sessionManagerStatus").textContent=
+      "Stop and complete the active recording before uploading it.";
+    return;
+  }
+  managerUploadingId=id;
+  try {
+    renderSessionManager(await sessionCatalog());
+    const result=await attemptSessionUpload(id,{manual:true});
+    $("sessionManagerStatus").textContent=
+      result.status==="Verified"?"Session verified on server":
+      result.status==="Count mismatch"?"Count mismatch — session was not overwritten":
+      result.status;
+  } catch(error) {
+    $("sessionManagerStatus").textContent=error.message;
+    log("Session upload failed: "+error.message);
+  } finally {
+    managerUploadingId=null;
+    await refreshSessionManager();
+  }
+}
 function deleteMeta(key) {
   return new Promise((resolve,reject)=>{
     const req=db.transaction("meta","readwrite").objectStore("meta").delete(key);
@@ -2453,55 +2887,70 @@ function deleteMeta(key) {
   });
 }
 async function syncPending() {
-  if (syncBusy) return;
+  if (syncBusy||managerUploadingId!==null) return;
   if (!db) { syncState("Storage unavailable"); return; }
   const ids=await refreshPending();
   if (!syncUrl.trim()) {syncState("Server not configured");return;}
   if (!ids.length) {syncState("No pending uploads");return;}
   if (!uploadToken) {syncState("Pending - enter token");return;}
   syncBusy=true;
+  let serverListLoaded=false;
   try {
     const base=serverBase();
+    const rows=await fetchServerSessions(base);
+    serverListLoaded=true;
     for (const id of ids) {
+      if(activeSession(id)) continue;
       syncState("Uploading...");
-      const [packets,track]=await Promise.all([
-        dbAllFor("packets",id),dbAllFor("track",id)
+      const [localPackets,localTrack,ack]=await Promise.all([
+        dbCountFor("packets",id),dbCountFor("track",id),dbGet("meta","upload_ack:"+id)
       ]);
-      const payload={session_id:id,source:"WarDriver-v0.7.6",
-        packets:packets.map(({
-          id:localId,session,raw_packet_hex,advertisement_public_key,
-          advertisement_signature_verified,candidate_repeater_keys,
-          candidate_repeater_names,identification_evidence,evidence_class,
-          direct_repeater_key,likely_last_hop_key,last_hop_hash,
-          last_hop_candidates,...rest
-        })=>({
-          ...rest,node_id:rest.node_key||null
-        })),
-        track:track.map(({id:localId,session,...rest})=>rest)};
-      const response=await fetch(base+"/api/sessions",{
-        method:"POST",
-        headers:{"Content-Type":"application/json",
-                 "Authorization":"Bearer "+uploadToken},
-        body:JSON.stringify(payload),
-        cache:"no-store"
-      });
-      if(!response.ok) throw new Error("HTTP "+response.status);
-      const result=await response.json();
-      if(result.status!=="saved" && result.status!=="already_exists")
-        throw new Error("Unexpected server acknowledgement");
-      await deleteMeta("pending:"+id);
-      await dbPut("meta",{key:"synced:"+id,value:new Date().toISOString()});
-      log("Synced session "+id);
-      await refreshPending();
+      const existing=serverEntryFor(rows,id);
+      if(existing) {
+        const result=classifyServerEntry(existing,localPackets,localTrack);
+        await recordVerification(id,localPackets,localTrack,result,base);
+        if(result.status==="Verified") await markSessionVerified(id);
+        else syncState(result.status==="Count mismatch"?
+          "Pending - server count mismatch":"Pending - verification unavailable");
+        continue;
+      }
+      if(rows.length>=500) {
+        await recordVerification(id,localPackets,localTrack,{
+          status:"Not confirmed — server list limit"
+        },base);
+        syncState("Pending - server list limit");
+        continue;
+      }
+      if(ack) {
+        await recordVerification(id,localPackets,localTrack,{
+          status:"Verification unavailable"
+        },base);
+        syncState("Pending - awaiting server verification");
+        continue;
+      }
+      managerUploadingId=id;
+      try {
+        await refreshSessionManager();
+        const result=await attemptSessionUpload(id,{knownRows:rows,base});
+        if(result.status==="Verified") log("Verified session "+id);
+        else if(result.status==="Count mismatch") syncState("Pending - server count mismatch");
+      } finally {
+        managerUploadingId=null;
+      }
     }
     await refreshPending();
-    syncState("All synced");
+    const remaining=await pendingIds();
+    syncState(remaining.length?"Pending - verification or upload required":"All synced");
   } catch(e) {
-    syncState("Pending - upload failed");
+    syncState("Pending - verification or upload failed");
     log("Sync error: "+e.message);
+    if(!serverListLoaded) {
+      await Promise.all(ids.map(id=>setSessionVerificationUnavailable(id,e.message)));
+    }
   } finally {
     syncBusy=false;
     await refreshPending();
+    await refreshSessionManager();
   }
 }
 
@@ -2522,6 +2971,7 @@ function updateButtons() {
   rec.className = recording ? "active-stop" : "";
   rec.setAttribute("aria-pressed", String(recording));
   rec.disabled = recordingStartBusy || recordingStopBusy ||
+    managerUploadingId!==null ||
     Boolean(gpsStopPromise);
   ble.setAttribute("aria-pressed", String(connected));
 }
@@ -2681,6 +3131,10 @@ $("serverUrl").addEventListener("change",()=>{
   writeLocalStorage(SYNC_URL_KEY,syncUrl);
   if ($("rememberUploadToken").checked) persistRememberedConfiguration();
   syncState("Configured - not synced");
+  void refreshSessionManager().catch(error=>{
+    $("sessionManagerStatus").textContent="Session refresh failed: "+error.message;
+    log("Session refresh failed: "+error.message);
+  });
 });
 $("uploadToken").addEventListener("change",updateCurrentUploadToken);
 $("setToken").onclick=updateCurrentUploadToken;
@@ -2708,6 +3162,13 @@ $("forgetSavedToken").onclick=()=>{
   syncState("Token cleared");
 };
 $("retrySync").onclick=syncPending;
+$("refreshSessions").onclick=async()=>{
+  try { await refreshSessionManager(); }
+  catch(error) {
+    $("sessionManagerStatus").textContent="Session refresh failed: "+error.message;
+  }
+};
+$("verifyAllSessions").onclick=verifyAllSessions;
 if(syncUrl) syncState("Server configured");
 
 
