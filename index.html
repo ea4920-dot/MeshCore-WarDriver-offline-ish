@@ -5,7 +5,7 @@
 <meta name="viewport"
  content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#101820">
-<title>MeshCore WarDriver v0.7.5</title>
+<title>MeshCore WarDriver v0.7.6</title>
 
 <!-- Leaflet CSS: load before application styles -->
 <link rel="stylesheet"
@@ -104,6 +104,8 @@ button.active-stop { background: #bd3548; color: white; }
 button.active-on { background: #197c55; color: white; }
 button:disabled { opacity: .45; }
 input[type="url"] { width:100%;padding:10px;border:1px solid #435764;
+  border-radius:8px;background:#101820;color:white;margin:6px 0 8px; }
+input[type="password"] { width:100%;padding:10px;border:1px solid #435764;
   border-radius:8px;background:#101820;color:white;margin:6px 0 8px; }
 #syncBadge {
   display:flex; align-items:center; flex:0 0 32px; height:32px; min-width:0;
@@ -366,7 +368,7 @@ button { padding:8px 7px; font-size:12px; }
 <header>
   <div>
     <h1>MeshCore WarDriver</h1>
-    <small>v0.7.5 | Repeater Filter Refinement </small>
+    <small>v0.7.6 | Repeater Filter Refinement </small>
   </div>
   <span id="statePill" class="pill">Not recording</span>
 </header>
@@ -403,7 +405,6 @@ button { padding:8px 7px; font-size:12px; }
   </div>
   <div class="actions" style="margin-top:10px">
     <button id="connect">Connect Node</button>
-    <button id="gpsBtn">Start GPS</button>
   </div>
 </div>
 
@@ -433,11 +434,12 @@ button { padding:8px 7px; font-size:12px; }
 
   <div class="panel">
     <div class="actions">
-      <button id="recordBtn">Start recording</button>
+      <button id="recordBtn">Start Recording</button>
       <button id="follow" class="secondary">
         Follow GPS: On
       </button>
     </div>
+    <p class="foot">While recording is paused for GPS, received packets are not saved.</p>
 
     <div class="row">
       <span>Recorded packets</span>
@@ -506,9 +508,14 @@ button { padding:8px 7px; font-size:12px; }
     <h3>Map server synchronisation</h3>
     <label for="serverUrl">Server HTTPS URL</label>
     <input id="serverUrl" type="url" autocomplete="url" placeholder="https://example.trycloudflare.com">
-    <p class="foot">Upload token is kept in this browser tab's session storage, not in GitHub.</p>
+    <label for="uploadToken">Upload token</label>
+    <input id="uploadToken" type="password" autocomplete="off" placeholder="Enter upload token">
+    <label><input id="rememberUploadToken" type="checkbox"> Remember upload token on this device</label>
+    <p class="foot">Remembering stores the server URL and upload token in browser storage on this device. It is not an encrypted password vault.</p>
+    <p id="tokenStorageStatus" class="foot" role="status" aria-live="polite"></p>
     <div class="actions">
-      <button id="setToken" class="secondary">Enter upload token</button>
+      <button id="setToken" class="secondary">Set upload token</button>
+      <button id="forgetSavedToken" class="secondary">Forget saved token</button>
       <button id="retrySync">Retry pending uploads</button>
     </div>
     <div class="row"><span>Sync status</span><b id="syncStatus">Not configured</b></div>
@@ -581,20 +588,101 @@ const RX =
 const $ = id => document.getElementById(id);
 
 const DB_NAME = "meshcore-wardriver-v03";
+const SYNC_URL_KEY = "wardriver_sync_url";
+const REMEMBER_UPLOAD_TOKEN_KEY = "wardriver_remember_upload_token";
+const SAVED_UPLOAD_TOKEN_KEY = "wardriver_saved_upload_token";
+
+let tokenStorageWarning = "";
+function showTokenStorageWarning() {
+  tokenStorageWarning = "Browser storage is unavailable or restricted; token changes may not be saved on this device.";
+  const status = $("tokenStorageStatus");
+  if (status) status.textContent = tokenStorageWarning;
+}
+function clearTokenStorageWarning(message = "") {
+  tokenStorageWarning = "";
+  const status = $("tokenStorageStatus");
+  if (status) status.textContent = message;
+}
+function readLocalStorage(key) {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    showTokenStorageWarning();
+    return null;
+  }
+}
+function writeLocalStorage(key, value) {
+  try {
+    window.localStorage.setItem(key, value);
+    return true;
+  } catch {
+    showTokenStorageWarning();
+    return false;
+  }
+}
+function removeLocalStorage(key) {
+  try {
+    window.localStorage.removeItem(key);
+    return true;
+  } catch {
+    showTokenStorageWarning();
+    return false;
+  }
+}
+function readSessionStorage(key) {
+  try {
+    return window.sessionStorage.getItem(key);
+  } catch {
+    showTokenStorageWarning();
+    return null;
+  }
+}
+function writeSessionStorage(key, value) {
+  try {
+    window.sessionStorage.setItem(key, value);
+    return true;
+  } catch {
+    showTokenStorageWarning();
+    return false;
+  }
+}
+function removeSessionStorage(key) {
+  try {
+    window.sessionStorage.removeItem(key);
+    return true;
+  } catch {
+    showTokenStorageWarning();
+    return false;
+  }
+}
+
+const rememberedUploadToken =
+  readLocalStorage(REMEMBER_UPLOAD_TOKEN_KEY) === "true";
+const savedUploadToken = rememberedUploadToken
+  ? readLocalStorage(SAVED_UPLOAD_TOKEN_KEY) || ""
+  : "";
+if (!rememberedUploadToken) removeLocalStorage(SAVED_UPLOAD_TOKEN_KEY);
 
 let db = null;
 let device = null;
 let rxChar = null;
 let gpsWatch = null;
+let gpsWatchGeneration = 0;
+let gpsFreshnessTimer = null;
+let gpsStopPromise = null;
 let fix = null;
 
 let recording = false;
+let recordingStartPending = false;
+let recordingStartBusy = false;
+let recordingStopBusy = false;
 let bleBusy = false;
 let writeJobs = new Set();
 let syncBusy = false;
 let completedSession = false;
-let syncUrl = localStorage.getItem("wardriver_sync_url") || "";
-let uploadToken = sessionStorage.getItem("wardriver_upload_token") || "";
+let syncUrl = readLocalStorage(SYNC_URL_KEY) || "";
+let uploadToken = savedUploadToken ||
+  readSessionStorage("wardriver_upload_token") || "";
 
 let follow = true;
 
@@ -1593,9 +1681,8 @@ function onBLE(event) {
       `${route.width}-byte final flood hash ${lastHop.hash}: ` +
       `${lastHop.matches.length} directory match(es); ambiguous: ${routeCandidateStats.ambiguous}.`;
   }
-  const valid = fix &&
-    now - fix.timestamp >= 0 &&
-    now - fix.timestamp <= fixMaxAge;
+  const valid = hasFreshGPSFix(now);
+  if (recording) updateRecordingGPSStatus(now);
 
   const point = {
     session: sessionId,
@@ -1618,7 +1705,7 @@ function onBLE(event) {
   enrichPacketEvidence(point);
   addRow(point);
 
-  if (recording) {
+  if (recording && valid) {
     trackWrite(savePacket(point));
   }
 }
@@ -1679,112 +1766,162 @@ async function savePacket(point) {
 
 /* GPS */
 
+function hasFreshGPSFix(now = Date.now()) {
+  if (!fix || !Number.isFinite(fix.lat) || !Number.isFinite(fix.lon) ||
+      fix.lat < -90 || fix.lat > 90 || fix.lon < -180 || fix.lon > 180 ||
+      !Number.isFinite(fix.timestamp)) return false;
+  const age = now - fix.timestamp;
+  return age >= 0 && age <= fixMaxAge;
+}
+
+function updateRecordingGPSStatus(now = Date.now()) {
+  const fresh = hasFreshGPSFix(now);
+  if (recordingStartPending && !recordingStartBusy) {
+    $("statePill").textContent = "Waiting for GPS...";
+    $("statePill").className = "pill";
+    if (fresh) void beginRecordingWithGPS();
+  } else if (recording) {
+    $("statePill").textContent = fresh
+      ? "Recording"
+      : "GPS unavailable - recording paused";
+    $("statePill").className = fresh ? "pill ok" : "pill";
+  }
+}
+
 function startGPS() {
-  if (gpsWatch !== null) return;
+  if (gpsWatch !== null) return true;
 
   if (!navigator.geolocation) {
+    $("gpsStatus").textContent = "Unavailable";
     log("GPS unavailable");
-    return;
+    return false;
   }
 
-  $("gpsStatus").textContent = "Waiting...";
+  $("gpsStatus").textContent = "Waiting for GPS...";
+  const generation = ++gpsWatchGeneration;
+  try {
+    gpsWatch = navigator.geolocation.watchPosition(
+      async position => {
+        if (generation !== gpsWatchGeneration) return;
+        const c = position.coords;
 
-  gpsWatch = navigator.geolocation.watchPosition(
-    async position => {
-      const c = position.coords;
-
-      fix = {
-        lat: c.latitude,
-        lon: c.longitude,
-        accuracy: c.accuracy,
-        speed: c.speed,
-        timestamp: position.timestamp
-      };
-
-      $("gpsStatus").textContent = "Active";
-      $("gpsAcc").textContent =
-        Math.round(c.accuracy) + " m";
-
-      $("coords").textContent =
-        c.latitude.toFixed(5) + ", " +
-        c.longitude.toFixed(5);
-
-      if (map) {
-        const coordinates = [fix.lat, fix.lon];
-
-        if (!positionMarker) {
-          positionMarker = L.circleMarker(
-            coordinates,
-            {
-              radius: 8,
-              color: "#ffffff",
-              fillColor: "#2386ff",
-              fillOpacity: 1,
-              weight: 2
-            }
-          ).addTo(map);
-        } else {
-          positionMarker.setLatLng(coordinates);
-        }
-
-        if (repeaterDirectory.size &&
-            (!window.lastRepeaterRefresh || Date.now()-window.lastRepeaterRefresh>15000)) {
-          window.lastRepeaterRefresh=Date.now();
-          renderRepeaterMarkers();
-        }
-        if (follow) {
-          map.setView(
-            coordinates,
-            Math.max(map.getZoom(), 15)
-          );
-        }
-      }
-
-      if (
-        recording &&
-        position.timestamp - lastTrackAt >= 900
-      ) {
-        lastTrackAt = position.timestamp;
-
-        const point = {
-          session: sessionId,
-          timestamp:
-            new Date(position.timestamp).toISOString(),
-          lat: fix.lat,
-          lon: fix.lon,
-          accuracy_m: fix.accuracy,
-          speed_kmh:
-            fix.speed == null ? null : fix.speed * 3.6
+        fix = {
+          lat: c.latitude,
+          lon: c.longitude,
+          accuracy: c.accuracy,
+          speed: c.speed,
+          timestamp: position.timestamp
         };
 
-        try {
-          await trackWrite(dbPut("track", point));
-          trackCount++;
-          updateCounts();
-          drawTrack(point);
+        const fresh = hasFreshGPSFix();
+        $("gpsStatus").textContent = fresh ? "Active" : "Unavailable";
+        $("gpsAcc").textContent =
+          Math.round(c.accuracy) + " m";
 
-        } catch (error) {
-          log("Track storage error: " + error.message);
-          stopRecord();
+        $("coords").textContent =
+          c.latitude.toFixed(5) + ", " +
+          c.longitude.toFixed(5);
+
+        if (map) {
+          const coordinates = [fix.lat, fix.lon];
+
+          if (!positionMarker) {
+            positionMarker = L.circleMarker(
+              coordinates,
+              {
+                radius: 8,
+                color: "#ffffff",
+                fillColor: "#2386ff",
+                fillOpacity: 1,
+                weight: 2
+              }
+            ).addTo(map);
+          } else {
+            positionMarker.setLatLng(coordinates);
+          }
+
+          if (repeaterDirectory.size &&
+              (!window.lastRepeaterRefresh || Date.now()-window.lastRepeaterRefresh>15000)) {
+            window.lastRepeaterRefresh=Date.now();
+            renderRepeaterMarkers();
+          }
+          if (follow) {
+            map.setView(
+              coordinates,
+              Math.max(map.getZoom(), 15)
+            );
+          }
         }
+
+        updateRecordingGPSStatus();
+
+        if (
+          recording &&
+          fresh &&
+          position.timestamp - lastTrackAt >= 900
+        ) {
+          lastTrackAt = position.timestamp;
+
+          const point = {
+            session: sessionId,
+            timestamp:
+              new Date(position.timestamp).toISOString(),
+            lat: fix.lat,
+            lon: fix.lon,
+            accuracy_m: fix.accuracy,
+            speed_kmh:
+              fix.speed == null ? null : fix.speed * 3.6
+          };
+
+          try {
+            await trackWrite(dbPut("track", point));
+            trackCount++;
+            updateCounts();
+            drawTrack(point);
+
+          } catch (error) {
+            log("Track storage error: " + error.message);
+            stopRecord();
+          }
+        }
+      },
+      error => {
+        if (generation !== gpsWatchGeneration) return;
+        fix = null;
+        $("gpsStatus").textContent = "Unavailable";
+        updateRecordingGPSStatus();
+        log("GPS: " + error.message);
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 1000,
+        timeout: 15000
       }
-    },
-    error => {
-      $("gpsStatus").textContent = "Error";
-      log("GPS: " + error.message);
-    },
-    {
-      enableHighAccuracy: true,
-      maximumAge: 1000,
-      timeout: 15000
-    }
-  );
+    );
+  } catch (error) {
+    gpsWatch = null;
+    $("gpsStatus").textContent = "Unavailable";
+    log("GPS: " + (error?.message || String(error)));
+    updateButtons();
+    return false;
+  }
+  gpsFreshnessTimer = setInterval(() => {
+    if (generation !== gpsWatchGeneration) return;
+    if (!hasFreshGPSFix()) $("gpsStatus").textContent = "Unavailable";
+    updateRecordingGPSStatus();
+  }, 1000);
   updateButtons();
+  return true;
 }
 
 function stopGPS() {
+  gpsWatchGeneration++;
   if (gpsWatch !== null) {
     navigator.geolocation.clearWatch(gpsWatch);
+  }
+  if (gpsFreshnessTimer !== null) {
+    clearInterval(gpsFreshnessTimer);
+    gpsFreshnessTimer = null;
   }
 
   gpsWatch = null;
@@ -1797,42 +1934,100 @@ function stopGPS() {
 
 /* Recording */
 
-async function startRecord() {
+function startRecord() {
+  if (recording || recordingStartPending || recordingStartBusy ||
+      recordingStopBusy || gpsStopPromise) return;
   if (syncBusy) {log("Wait for sync to finish");return;}
   if (!db) {
     log("Storage not ready");
     return;
   }
 
-  if (completedSession) {
-    sessionId = new Date().toISOString();
-    await dbPut("meta", {key:"current",value:sessionId});
-    packetCount = 0; trackCount = 0; noGps = 0; rxCount = 0;
-    updateCounts();
-    $("rxCount").textContent = "0";
-    $("packetRows").textContent = "";
-    currentSessionPackets = [];
-    rebuildObservationCounts();
-    if (packetLayer) packetLayer.clearLayers();
-    if (trackLine) trackLine.setLatLngs([]);
-    $("sessionStatus").textContent = sessionId.slice(0,19).replace("T"," ");
-    completedSession = false;
+  recordingStartPending = true;
+  $("statePill").textContent = "Waiting for GPS...";
+  $("statePill").className = "pill";
+  if (!startGPS()) {
+    recordingStartPending = false;
+    $("statePill").textContent = "GPS unavailable";
+    updateButtons();
+    return;
   }
-  recording = true;
-  lastTrackAt = 0;
-
-  $("statePill").textContent = "Recording";
-  $("statePill").className = "pill ok";
-
-  log("Recording started");
+  updateRecordingGPSStatus();
   updateButtons();
 }
 
+async function beginRecordingWithGPS() {
+  if (!recordingStartPending || recordingStartBusy || !hasFreshGPSFix()) return;
+  recordingStartBusy = true;
+  updateButtons();
+  try {
+    if (syncBusy) throw new Error("Wait for sync to finish");
+    if (!db) throw new Error("Storage not ready");
+    if (completedSession) {
+      sessionId = new Date().toISOString();
+      await dbPut("meta", {key:"current",value:sessionId});
+      packetCount = 0; trackCount = 0; noGps = 0; rxCount = 0;
+      updateCounts();
+      $("rxCount").textContent = "0";
+      $("packetRows").textContent = "";
+      currentSessionPackets = [];
+      rebuildObservationCounts();
+      if (packetLayer) packetLayer.clearLayers();
+      if (trackLine) trackLine.setLatLngs([]);
+      $("sessionStatus").textContent = sessionId.slice(0,19).replace("T"," ");
+      completedSession = false;
+    }
+    if (!recordingStartPending || !hasFreshGPSFix()) return;
+
+    recordingStartPending = false;
+    recording = true;
+    lastTrackAt = 0;
+    $("statePill").textContent = "Recording";
+    $("statePill").className = "pill ok";
+    log("Recording started");
+  } catch (error) {
+    recordingStartPending = false;
+    $("statePill").textContent = "Not recording";
+    $("statePill").className = "pill";
+    log("Recording start error: " + (error?.message || String(error)));
+    await stopGPSAfterWrites();
+  } finally {
+    recordingStartBusy = false;
+    updateRecordingGPSStatus();
+    updateButtons();
+  }
+}
+
+function cancelRecordingStart() {
+  if (!recordingStartPending || recordingStartBusy) return;
+  recordingStartPending = false;
+  $("statePill").textContent = "Not recording";
+  $("statePill").className = "pill";
+  stopGPS();
+  updateButtons();
+}
+
+function stopGPSAfterWrites() {
+  if (gpsStopPromise) return gpsStopPromise;
+  gpsStopPromise = (async () => {
+    while (writeJobs.size) {
+      await Promise.allSettled([...writeJobs]);
+    }
+    stopGPS();
+  })().finally(() => {
+    gpsStopPromise = null;
+    updateButtons();
+  });
+  return gpsStopPromise;
+}
+
 function stopRecord() {
+  if (!recording) return;
   recording = false;
   $("statePill").textContent = "Not recording";
   $("statePill").className = "pill";
   log("Recording stopped");
+  void stopGPSAfterWrites();
   updateButtons();
 }
 
@@ -1843,19 +2038,29 @@ function trackWrite(promise) {
 }
 
 async function stopAndSync() {
+  if (recordingStopBusy) return;
+  if (recordingStartPending) {
+    cancelRecordingStart();
+    return;
+  }
   if (!recording) return;
+  recordingStopBusy = true;
   stopRecord();
   const completedId = sessionId;
   completedSession = true;
-  await Promise.allSettled([...writeJobs]);
-  // Wait for any GPS write that began just before Stop.
-  await new Promise(resolve => setTimeout(resolve, 150));
   try {
+    await Promise.allSettled([...writeJobs]);
+    await stopGPSAfterWrites();
+    // Wait for any GPS write that began just before Stop.
+    await new Promise(resolve => setTimeout(resolve, 150));
     await dbPut("meta", {key:"pending:" + completedId, value:completedId});
     await refreshPending();
     await syncPending();
   } catch(e) {
     syncState("Pending - " + e.message);
+  } finally {
+    recordingStopBusy = false;
+    updateButtons();
   }
 }
 
@@ -2132,8 +2337,9 @@ async function newSession() {
 
   if (!confirm(message)) return;
 
-  if (recording || syncBusy) {
-    alert("Stop recording and wait for sync before creating a new session.");
+  if (recording || recordingStartPending || recordingStartBusy ||
+      recordingStopBusy || syncBusy) {
+    alert("Stop recording and wait for GPS or sync before creating a new session.");
     return;
   }
   const nextSessionId = new Date().toISOString();
@@ -2261,7 +2467,7 @@ async function syncPending() {
       const [packets,track]=await Promise.all([
         dbAllFor("packets",id),dbAllFor("track",id)
       ]);
-      const payload={session_id:id,source:"WarDriver-v0.6",
+      const payload={session_id:id,source:"WarDriver-v0.7.6",
         packets:packets.map(({
           id:localId,session,raw_packet_hex,advertisement_public_key,
           advertisement_signature_verified,candidate_repeater_keys,
@@ -2310,15 +2516,13 @@ function updateButtons() {
   ble.className = connected ? "active-stop" : "";
   ble.disabled = bleBusy;
 
-  const gps = $("gpsBtn");
-  gps.textContent = gpsWatch !== null ? "Stop GPS" : "Start GPS";
-  gps.className = gpsWatch !== null ? "active-stop" : "";
-  gps.setAttribute("aria-pressed", String(gpsWatch !== null));
-
   const rec = $("recordBtn");
-  rec.textContent = recording ? "Stop recording" : "Start recording";
+  rec.textContent = recording ? "Stop Recording" :
+    recordingStartPending ? "Cancel GPS wait" : "Start Recording";
   rec.className = recording ? "active-stop" : "";
   rec.setAttribute("aria-pressed", String(recording));
+  rec.disabled = recordingStartBusy || recordingStopBusy ||
+    Boolean(gpsStopPromise);
   ble.setAttribute("aria-pressed", String(connected));
 }
 
@@ -2347,12 +2551,9 @@ $("reconnect").onclick = () => {
     connect(true);
   }
 };
-$("gpsBtn").onclick = () => {
-  if (gpsWatch !== null) stopGPS();
-  else startGPS();
-};
 $("recordBtn").onclick = () => {
   if (recording) stopAndSync();
+  else if (recordingStartPending) cancelRecordingStart();
   else startRecord();
 };
 
@@ -2430,20 +2631,81 @@ $("clearRepeaters").onclick = async () => {
   installRepeaterDirectory([]);
   log("Repeater directory cleared");
 };
+function persistRememberedConfiguration() {
+  const urlSaved = writeLocalStorage(SYNC_URL_KEY, syncUrl);
+  const settingSaved = writeLocalStorage(REMEMBER_UPLOAD_TOKEN_KEY, "true");
+  const tokenSaved = uploadToken
+    ? writeLocalStorage(SAVED_UPLOAD_TOKEN_KEY, uploadToken)
+    : removeLocalStorage(SAVED_UPLOAD_TOKEN_KEY);
+  const saved = urlSaved && settingSaved && tokenSaved;
+  if (saved) {
+    clearTokenStorageWarning(
+      uploadToken
+        ? "Upload token and server URL will be remembered on this device."
+        : "Server URL saved; upload token will be remembered after it is set."
+    );
+  }
+  return saved;
+}
+function disableRememberedConfiguration() {
+  const tokenRemoved = removeLocalStorage(SAVED_UPLOAD_TOKEN_KEY);
+  const settingRemoved = removeLocalStorage(REMEMBER_UPLOAD_TOKEN_KEY);
+  const removed = tokenRemoved && settingRemoved;
+  if (removed) {
+    clearTokenStorageWarning("Saved upload token removed. Current token remains for this session.");
+  }
+  return removed;
+}
+function updateCurrentUploadToken() {
+  uploadToken = $("uploadToken").value.trim();
+  $("uploadToken").value = uploadToken;
+  const sessionSaved = uploadToken
+    ? writeSessionStorage("wardriver_upload_token", uploadToken)
+    : removeSessionStorage("wardriver_upload_token");
+  const persistentSaved = $("rememberUploadToken").checked
+    ? persistRememberedConfiguration()
+    : removeLocalStorage(SAVED_UPLOAD_TOKEN_KEY);
+  if (sessionSaved && persistentSaved && !$("rememberUploadToken").checked) {
+    clearTokenStorageWarning(
+      uploadToken ? "Upload token set for this browser session." : "Upload token cleared."
+    );
+  }
+  syncState(uploadToken ? "Token set" : "Token cleared");
+}
+
 $("serverUrl").value=syncUrl;
+$("uploadToken").value=uploadToken;
+$("rememberUploadToken").checked=rememberedUploadToken;
 $("serverUrl").addEventListener("change",()=>{
   syncUrl=$("serverUrl").value.trim();
-  localStorage.setItem("wardriver_sync_url",syncUrl);
+  writeLocalStorage(SYNC_URL_KEY,syncUrl);
+  if ($("rememberUploadToken").checked) persistRememberedConfiguration();
   syncState("Configured - not synced");
 });
-$("setToken").onclick=()=>{
-  const value=prompt("Enter the upload token (stored for this browser tab only):","");
-  if(value!==null) {
-    uploadToken=value.trim();
-    if(uploadToken) sessionStorage.setItem("wardriver_upload_token",uploadToken);
-    else sessionStorage.removeItem("wardriver_upload_token");
-    syncState(uploadToken?"Token set":"Token cleared");
+$("uploadToken").addEventListener("change",updateCurrentUploadToken);
+$("setToken").onclick=updateCurrentUploadToken;
+$("rememberUploadToken").addEventListener("change",()=>{
+  uploadToken=$("uploadToken").value.trim();
+  $("uploadToken").value=uploadToken;
+  if ($("rememberUploadToken").checked) {
+    syncUrl=$("serverUrl").value.trim();
+    persistRememberedConfiguration();
+  } else {
+    disableRememberedConfiguration();
   }
+  if(uploadToken) writeSessionStorage("wardriver_upload_token",uploadToken);
+  else removeSessionStorage("wardriver_upload_token");
+});
+$("forgetSavedToken").onclick=()=>{
+  $("rememberUploadToken").checked=false;
+  $("uploadToken").value="";
+  uploadToken="";
+  const tokenRemoved = removeSessionStorage("wardriver_upload_token");
+  const persistentRemoved = disableRememberedConfiguration();
+  if (tokenRemoved && persistentRemoved) {
+    clearTokenStorageWarning("Saved and current upload tokens forgotten.");
+  }
+  syncState("Token cleared");
 };
 $("retrySync").onclick=syncPending;
 if(syncUrl) syncState("Server configured");
