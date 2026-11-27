@@ -35,6 +35,10 @@ const activeSessionFunction = extract(
   "function activeSession(id)",
   "\nfunction usableServerBase("
 );
+const stopAndSyncFunction = extract(
+  "async function stopAndSync()",
+  "\n/* Export */"
+);
 const pendingSync = extract(
   "async function syncPending()",
   "\n/* One-button connection and recording controls */"
@@ -62,6 +66,7 @@ function makeRotationHarness(options = {}) {
   const context = {
     Date: FixedDate,
     TextEncoder,
+    setTimeout,
     MAX_SESSION_PACKETS: 500,
     MAX_SESSION_UPLOAD_BYTES: 5 * 1024 * 1024,
     SESSION_UPLOAD_SAFETY_BYTES: options.byteLimit ??
@@ -111,12 +116,14 @@ function makeRotationHarness(options = {}) {
       }
       if (store === "meta" && value.key.startsWith("pending:")) {
         pending.push(value.value);
+        context.pendingMarkers.add(value.value);
       }
       if (store === "meta" && value.key === "current") {
         labels.set(value.value, context.recordingReceiverName);
       }
     },
-    refreshPending: async () => [],
+    pendingMarkers: new Set(),
+    refreshPending: async () => [...context.pendingMarkers],
     refreshSessionManager: async () => {},
     updateCounts: () => {},
     drawTrack: () => {},
@@ -126,13 +133,14 @@ function makeRotationHarness(options = {}) {
     $: id => ({textContent: ""}),
     log: message => { context.lastLog = message; },
     stopRecord: () => { context.recording=false; },
+    stopGPSAfterWrites: async () => {},
     startGPS: () => true,
     updateRecordingGPSStatus: () => {},
     syncPending: () => { context.syncCalls = (context.syncCalls || 0) + 1; },
     serverListLoaded: true,
     syncUrl: "https://map.example",
     uploadToken: "token",
-    pendingIds: async () => [],
+    pendingIds: async () => [...context.pendingMarkers],
     serverBase: () => "https://map.example",
     fetchServerSessions: async () => [],
     activeSession: () => false,
@@ -148,11 +156,15 @@ function makeRotationHarness(options = {}) {
   const api = runInNewContext(
     `${sessionHelpers}\n${saveTrackPointFunction}\n${recordingStart}\n${rotationFunctions}\n` +
     `${activeSessionFunction}\n` +
+    `${options.integratedSync?pendingSync:""}\n` +
+    `${options.integratedSync?stopAndSyncFunction:""}\n` +
     `({enqueueRecordingObservation,startRecord,scheduleSessionRotation,activeSession,saveTrackPoint,createRecordingSession,` +
+    `${options.integratedSync?"syncPending,stopAndSync,":""}`+
     `estimatedUploadRowBytes,uploadTrackRecord,` +
     `get:()=>({sessionId,recording,sessionRotationPending,sessionRotationPromise,` +
     `sessionPacketEstimateCount,sessionUploadEstimatedBytes,rotationObservationBuffer,trackCount,` +
-    `managerUploadAutomatic,recordingStartPending,pendingWrites:writeJobs.size}),` +
+    `managerUploadAutomatic,recordingStartPending,pendingWrites:writeJobs.size,` +
+    `syncQueued,syncBusy,recordingStopBusy,completedSession}),` +
     `set:(values)=>Object.assign(globalThis,values)})`,
     context
   );
@@ -307,6 +319,72 @@ test("rotation waits for outstanding writes and stop finalizes buffered observat
     "Receiver-RX_2026-11-27T10:00:00.000Z"
   ]);
   assert.equal(api.get().recording, false);
+});
+
+test("Stop Recording automatically uploads the final session after a rotated session", async () => {
+  const {api,context}=makeRotationHarness({integratedSync:true});
+  const uploads=[];
+  context.syncState=message=>{context.syncStatus=message;};
+  context.attemptSessionUpload=async id=>{
+    assert.equal(api.activeSession(id),false);
+    uploads.push(id);
+    context.pendingMarkers.delete(id);
+    return {status:"Verified"};
+  };
+  api.set({sessionPacketEstimateCount:499});
+  await api.enqueueRecordingObservation("packet",{timestamp:"rotation"});
+  await waitForRotation(api);
+  for(let i=0;i<30&&uploads.length<1;i++) {
+    await new Promise(resolve=>setImmediate(resolve));
+  }
+  const rotatedId="Receiver-RX_2026-11-27T09:00:00.000Z";
+  assert.deepEqual(uploads,[rotatedId]);
+
+  const finalId=api.get().sessionId;
+  await api.enqueueRecordingObservation("track",{timestamp:"final-gps"});
+  await api.stopAndSync();
+
+  assert.deepEqual(uploads,[rotatedId,finalId],
+    JSON.stringify({status:context.syncStatus,log:context.lastLog,pending:[...context.pendingMarkers]}));
+  assert.equal(context.pendingMarkers.size,0);
+  assert.equal(api.activeSession(finalId),false);
+});
+
+test("Stop Recording queues final-session sync behind an earlier session upload", async () => {
+  const {api,context}=makeRotationHarness({integratedSync:true});
+  const uploads=[];
+  context.syncState=message=>{context.syncStatus=message;};
+  let releaseEarlierUpload;
+  let signalEarlierUpload;
+  const earlierStarted=new Promise(resolve=>{signalEarlierUpload=resolve;});
+  context.attemptSessionUpload=async id=>{
+    uploads.push(id);
+    if(uploads.length===1) {
+      signalEarlierUpload();
+      await new Promise(resolve=>{releaseEarlierUpload=resolve;});
+    }
+    context.pendingMarkers.delete(id);
+    return {status:"Verified"};
+  };
+  api.set({sessionPacketEstimateCount:499});
+  await api.enqueueRecordingObservation("packet",{timestamp:"rotation"});
+  await waitForRotation(api);
+  await earlierStarted;
+
+  const finalId=api.get().sessionId;
+  await api.enqueueRecordingObservation("track",{timestamp:"final-gps"});
+  await api.stopAndSync();
+  assert.deepEqual(uploads,["Receiver-RX_2026-11-27T09:00:00.000Z"]);
+
+  releaseEarlierUpload();
+  for(let i=0;i<50&&uploads.length<2;i++) {
+    await new Promise(resolve=>setImmediate(resolve));
+  }
+  assert.deepEqual(uploads,[
+    "Receiver-RX_2026-11-27T09:00:00.000Z",
+    finalId
+  ],JSON.stringify({status:context.syncStatus,log:context.lastLog,pending:[...context.pendingMarkers],queued:api.get().syncQueued}));
+  assert.equal(context.pendingMarkers.size,0);
 });
 
 test("manual stop and rotation keep an incomplete current session unavailable for upload", () => {

@@ -2746,7 +2746,8 @@ function formattedSessionDate(id) {
 }
 function activeSession(id) {
   return id===sessionId && (recording || recordingStartPending ||
-    recordingStartBusy || recordingStopBusy || sessionRotationPending ||
+    recordingStartBusy || (recordingStopBusy&&!completedSession) ||
+    sessionRotationPending ||
     (!completedSession&&packetCount===0&&trackCount===0));
 }
 function usableServerBase() {
@@ -3096,14 +3097,15 @@ async function syncPending() {
     return;
   }
   syncQueued=false;
-  if (!db) { syncState("Storage unavailable"); return; }
-  const ids=await refreshPending();
-  if (!syncUrl.trim()) {syncState("Server not configured");return;}
-  if (!ids.length) {syncState("No pending uploads");return;}
-  if (!uploadToken) {syncState("Pending - enter token");return;}
   syncBusy=true;
+  let ids=[];
   let serverListLoaded=false;
   try {
+    if (!db) {syncState("Storage unavailable");return;}
+    ids=await refreshPending();
+    if (!syncUrl.trim()) {syncState("Server not configured");return;}
+    if (!ids.length) {syncState("No pending uploads");return;}
+    if (!uploadToken) {syncState("Pending - enter token");return;}
     const base=serverBase();
     const rows=await fetchServerSessions(base);
     serverListLoaded=true;
@@ -3160,11 +3162,16 @@ async function syncPending() {
   } finally {
     syncBusy=false;
     managerUploadAutomatic=false;
-    await refreshPending();
-    await refreshSessionManager();
-    if(syncQueued) {
-      syncQueued=false;
-      setTimeout(()=>void syncPending(),0);
+    try {
+      if(db) {
+        await refreshPending();
+        await refreshSessionManager();
+      }
+    } finally {
+      if(syncQueued) {
+        syncQueued=false;
+        setTimeout(()=>void syncPending(),0);
+      }
     }
   }
 }
