@@ -4,7 +4,7 @@
 
 MeshCore WarDriver connects to a compatible MeshCore companion node using Web Bluetooth, records received radio packets alongside GPS coordinates and signal measurements, and displays reception observations on an interactive map. It is designed for mobile wardriving and can synchronise completed sessions to a separate coverage-map server.
 
-**Current documented version:** v0.7.8
+**Current documented version:** v0.7.8.1
 
 > WarDriver measures reception at your own radio. Its *likely last-hop* repeater matches are estimates based on MeshCore flood-routing identifiers, not proof of direct RF reception or continuous coverage.
 
@@ -131,4 +131,4 @@ You can optionally run your own **MeshCore Map Server** using Docker to combine 
 
 ## Project status
 
-v0.7.8 is the currently documented WarDriver version. New session IDs include the connected receiver name and timestamp; older timestamp-only IDs remain supported and are not migrated. Its Bluetooth, GPS, recording, heard-only repeater selection, session management, and export workflows have been exercised during development; behaviour still depends on the browser, Bluetooth bridge, and companion firmware. Server synchronisation should be tested against each deployment before relying on automatic backups.
+v0.7.8.1 is the currently documented WarDriver version. New session IDs include the connected receiver name and timestamp; older timestamp-only IDs remain supported and are not migrated. Its Bluetooth, GPS, recording, heard-only repeater selection, session management, and export workflows have been exercised during development; behaviour still depends on the browser, Bluetooth bridge, and companion firmware. Server synchronisation should be tested against each deployment before relying on automatic backups.
