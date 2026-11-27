@@ -5,7 +5,7 @@
 <meta name="viewport"
  content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#101820">
-<title>MeshCore WarDriver v0.7.7</title>
+<title>MeshCore WarDriver v0.7.8 — Receiver-Named Sessions</title>
 
 <!-- Leaflet CSS: load before application styles -->
 <link rel="stylesheet"
@@ -374,7 +374,7 @@ button { padding:8px 7px; font-size:12px; }
 <header>
   <div>
     <h1>MeshCore WarDriver</h1>
-    <small>v0.7.7 | Session Manager </small>
+    <small>v0.7.8 | Receiver-Named Sessions</small>
   </div>
   <span id="statePill" class="pill">Not recording</span>
 </header>
@@ -608,6 +608,9 @@ const DB_NAME = "meshcore-wardriver-v03";
 const SYNC_URL_KEY = "wardriver_sync_url";
 const REMEMBER_UPLOAD_TOKEN_KEY = "wardriver_remember_upload_token";
 const SAVED_UPLOAD_TOKEN_KEY = "wardriver_saved_upload_token";
+const MAX_SESSION_PACKETS = 500;
+const MAX_SESSION_UPLOAD_BYTES = 5 * 1024 * 1024;
+const SESSION_UPLOAD_SAFETY_BYTES = Math.floor(MAX_SESSION_UPLOAD_BYTES * 0.9);
 
 let tokenStorageWarning = "";
 function showTokenStorageWarning() {
@@ -692,7 +695,15 @@ let fix = null;
 let recording = false;
 let recordingStartPending = false;
 let recordingStartBusy = false;
+let recordingSessionPrepared = false;
 let recordingStopBusy = false;
+let sessionRotationPending = false;
+let sessionRotationPromise = null;
+let rotationObservationBuffer = [];
+let recordingWriteFailures = new Map();
+let lastRecordingSessionTimestamp = 0;
+let syncQueued = false;
+let managerUploadAutomatic = false;
 let bleBusy = false;
 let writeJobs = new Set();
 let syncBusy = false;
@@ -712,6 +723,9 @@ let packetCount = 0;
 let trackCount = 0;
 
 let sessionId = null;
+let recordingReceiverName = "";
+let sessionPacketEstimateCount = 0;
+let sessionUploadEstimatedBytes = 0;
 let lastTrackAt = 0;
 
 let map = null;
@@ -866,6 +880,8 @@ async function initSession() {
     packetCount = packets.length;
     trackCount = track.length;
     if(packetCount>0||trackCount>0) completedSession=true;
+    sessionPacketEstimateCount=packetCount;
+    sessionUploadEstimatedBytes=estimateUploadPayloadBytes(sessionId,packets,track);
 
     noGps = packets.filter(p => p.lat == null).length;
 
@@ -885,7 +901,7 @@ async function initSession() {
     currentSessionPackets.slice(-30).forEach(addRow);
 
     $("sessionStatus").textContent =
-      sessionId.slice(0, 19).replace("T", " ");
+      sessionDisplayName(sessionId);
 
     log("Loaded " + packets.length +
         " packets and " + track.length + " GPS points");
@@ -1733,15 +1749,21 @@ function onBLE(event) {
   addRow(point);
 
   if (recording && valid) {
-    trackWrite(savePacket(point));
+    enqueueRecordingObservation("packet",point);
   }
+}
+
+async function saveTrackPoint(point) {
+  if(!db) throw new Error("Storage unavailable");
+  await dbPut("track",point);
+  trackCount++;
+  updateCounts();
+  drawTrack(point);
 }
 
 async function savePacket(point) {
   if (!db) {
-    log("Storage unavailable");
-    stopRecord();
-    return;
+    throw new Error("Storage unavailable");
   }
 
   try {
@@ -1788,6 +1810,7 @@ async function savePacket(point) {
   } catch (error) {
     log("Packet storage error: " + error.message);
     stopRecord();
+    throw error;
   }
 }
 
@@ -1901,11 +1924,7 @@ function startGPS() {
           };
 
           try {
-            await trackWrite(dbPut("track", point));
-            trackCount++;
-            updateCounts();
-            drawTrack(point);
-
+            await enqueueRecordingObservation("track",point);
           } catch (error) {
             log("Track storage error: " + error.message);
             stopRecord();
@@ -1963,14 +1982,15 @@ function stopGPS() {
 
 function startRecord() {
   if (recording || recordingStartPending || recordingStartBusy ||
-      recordingStopBusy || gpsStopPromise || managerUploadingId!==null) return;
-  if (syncBusy) {log("Wait for sync to finish");return;}
+      recordingStopBusy || gpsStopPromise ||
+      (managerUploadingId!==null&&!managerUploadAutomatic)) return;
   if (!db) {
     log("Storage not ready");
     return;
   }
 
   recordingStartPending = true;
+  recordingSessionPrepared = false;
   $("statePill").textContent = "Waiting for GPS...";
   $("statePill").className = "pill";
   if (!startGPS()) {
@@ -1985,32 +2005,37 @@ function startRecord() {
 
 async function beginRecordingWithGPS() {
   if (!recordingStartPending || recordingStartBusy || !hasFreshGPSFix()) return;
-  if (managerUploadingId!==null) {
+  if (managerUploadingId!==null&&!managerUploadAutomatic) {
     cancelRecordingStart();
     return;
   }
   recordingStartBusy = true;
   updateButtons();
   try {
-    if (syncBusy) throw new Error("Wait for sync to finish");
     if (!db) throw new Error("Storage not ready");
-    if (completedSession) {
-      sessionId = new Date().toISOString();
-      await dbPut("meta", {key:"current",value:sessionId});
-      packetCount = 0; trackCount = 0; noGps = 0; rxCount = 0;
-      updateCounts();
-      $("rxCount").textContent = "0";
-      $("packetRows").textContent = "";
-      currentSessionPackets = [];
-      rebuildObservationCounts();
-      if (packetLayer) packetLayer.clearLayers();
-      if (trackLine) trackLine.setLatLngs([]);
-      $("sessionStatus").textContent = sessionId.slice(0,19).replace("T"," ");
-      completedSession = false;
+    if(!recordingSessionPrepared) {
+      const resetSession=completedSession;
+      recordingReceiverName=connectedReceiverName();
+      await createRecordingSession(recordingReceiverName);
+      if (resetSession) {
+        packetCount = 0; trackCount = 0; noGps = 0; rxCount = 0;
+        sessionPacketEstimateCount=0;
+        sessionUploadEstimatedBytes=emptyUploadPayloadBytes(sessionId);
+        updateCounts();
+        $("rxCount").textContent = "0";
+        $("packetRows").textContent = "";
+        currentSessionPackets = [];
+        rebuildObservationCounts();
+        if (packetLayer) packetLayer.clearLayers();
+        if (trackLine) trackLine.setLatLngs([]);
+      }
+      recordingSessionPrepared=true;
     }
+    $("sessionStatus").textContent = sessionDisplayName(sessionId);
     if (!recordingStartPending || !hasFreshGPSFix()) return;
 
     recordingStartPending = false;
+    recordingSessionPrepared=false;
     recording = true;
     lastTrackAt = 0;
     $("statePill").textContent = "Recording";
@@ -2018,6 +2043,7 @@ async function beginRecordingWithGPS() {
     log("Recording started");
   } catch (error) {
     recordingStartPending = false;
+    recordingSessionPrepared=false;
     $("statePill").textContent = "Not recording";
     $("statePill").className = "pill";
     log("Recording start error: " + (error?.message || String(error)));
@@ -2027,6 +2053,55 @@ async function beginRecordingWithGPS() {
     updateRecordingGPSStatus();
     updateButtons();
   }
+}
+
+function receiverSessionPrefix(name) {
+  const cleaned=Array.from(String(name||"").trim()
+    .replace(/\s+/gu,"-")
+    .replace(/[^\p{L}\p{N}_-]/gu,"-")
+    .replace(/-+/g,"-")
+    .replace(/^-+|-+$/g,""))
+    .slice(0,40).join("").replace(/-+$/g,"");
+  return cleaned||"Unknown-Receiver";
+}
+function createReceiverSessionId(name,date=new Date()) {
+  return `${receiverSessionPrefix(name)}_${date.toISOString()}`;
+}
+function sessionTimestamp(id) {
+  const match=String(id).match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)$/);
+  return match?match[1]:String(id);
+}
+function sessionReceiverName(id) {
+  const match=String(id).match(/^(.*)_(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)$/);
+  return match?match[1]:"";
+}
+function sessionDisplayName(id) {
+  const date=new Date(sessionTimestamp(id));
+  const dateText=Number.isNaN(date.getTime())?"Date unavailable":date.toLocaleString();
+  const receiver=sessionReceiverName(id);
+  return receiver?`${receiver} · ${dateText}`:dateText;
+}
+function compareSessionIds(a,b) {
+  const ta=Date.parse(sessionTimestamp(a)),tb=Date.parse(sessionTimestamp(b));
+  const validA=Number.isFinite(ta),validB=Number.isFinite(tb);
+  if(validA&&validB&&ta!==tb) return tb-ta;
+  if(validA!==validB) return validA?-1:1;
+  return b.localeCompare(a);
+}
+function connectedReceiverName() {
+  return device?.gatt?.connected?device.name:null;
+}
+async function createRecordingSession(receiverName=recordingReceiverName) {
+  const previousTimestamp=Date.parse(sessionTimestamp(sessionId||""));
+  const timestamp=Math.max(new Date().getTime(),lastRecordingSessionTimestamp+1,
+    Number.isFinite(previousTimestamp)?previousTimestamp+1:0);
+  sessionId=createReceiverSessionId(receiverName,new Date(timestamp));
+  await dbPut("meta",{key:"current",value:sessionId});
+  lastRecordingSessionTimestamp=timestamp;
+  completedSession=false;
+  sessionPacketEstimateCount=0;
+  sessionUploadEstimatedBytes=emptyUploadPayloadBytes(sessionId);
+  return sessionId;
 }
 
 function cancelRecordingStart() {
@@ -2062,10 +2137,148 @@ function stopRecord() {
   updateButtons();
 }
 
-function trackWrite(promise) {
-  writeJobs.add(promise);
-  promise.finally(() => writeJobs.delete(promise)).catch(() => {});
-  return promise;
+function trackWrite(promise,session=sessionId) {
+  let tracked;
+  tracked=Promise.resolve(promise).catch(error=>{
+    const failures=recordingWriteFailures.get(session)||[];
+    failures.push(error);
+    recordingWriteFailures.set(session,failures);
+    log("Recording storage error: "+error.message);
+    stopRecord();
+  }).finally(()=>writeJobs.delete(tracked));
+  writeJobs.add(tracked);
+  return tracked;
+}
+
+function utf8ByteLength(value) {
+  return new TextEncoder().encode(value).length;
+}
+function uploadPacketRecord(point) {
+  const {
+    id:localId,session,raw_packet_hex,advertisement_public_key,
+    advertisement_signature_verified,candidate_repeater_keys,
+    candidate_repeater_names,identification_evidence,evidence_class,
+    direct_repeater_key,likely_last_hop_key,last_hop_hash,
+    last_hop_candidates,...rest
+  }=point;
+  return {...rest,node_id:rest.node_key||null};
+}
+function uploadTrackRecord(point) {
+  const {id:localId,session,...rest}=point;
+  return rest;
+}
+function emptyUploadPayloadBytes(id) {
+  return utf8ByteLength(JSON.stringify(uploadPayload(id,[],[])));
+}
+function estimatedUploadRowBytes(row) {
+  const bytes=utf8ByteLength(JSON.stringify(row));
+  return bytes+Math.ceil(bytes*0.1)+24;
+}
+function estimateUploadPayloadBytes(id,packets,track) {
+  return emptyUploadPayloadBytes(id)+
+    packets.reduce((total,row)=>total+estimatedUploadRowBytes(uploadPacketRecord(row)),0)+
+    track.reduce((total,row)=>total+estimatedUploadRowBytes(uploadTrackRecord(row)),0);
+}
+function sessionRotationThresholdReached() {
+  return sessionPacketEstimateCount>=MAX_SESSION_PACKETS||
+    sessionUploadEstimatedBytes>=SESSION_UPLOAD_SAFETY_BYTES;
+}
+function enqueueRecordingObservation(kind,point,force=false) {
+  if(!recording&&!force) return Promise.resolve();
+  if(sessionRotationPending) {
+    rotationObservationBuffer.push({kind,point});
+    return Promise.resolve();
+  }
+  point.session=sessionId;
+  const observationSession=sessionId;
+  sessionUploadEstimatedBytes+=estimatedUploadRowBytes(
+    kind==="packet"?uploadPacketRecord(point):uploadTrackRecord(point));
+  if(kind==="packet") sessionPacketEstimateCount++;
+  const write=trackWrite(
+    kind==="packet"?savePacket(point):saveTrackPoint(point),
+    observationSession
+  );
+  if(sessionRotationThresholdReached()) {
+    void scheduleSessionRotation();
+  }
+  return write;
+}
+function scheduleSessionRotation() {
+  sessionRotationPending=true;
+  if(sessionRotationPromise) return sessionRotationPromise;
+  sessionRotationPromise=rotateRecordingSessions().catch(error=>{
+    log("Session rotation failed: "+error.message);
+    recording=false;
+    $("statePill").textContent="Recording stopped — storage error";
+    $("statePill").className="pill";
+  }).finally(()=>{
+    sessionRotationPromise=null;
+    updateButtons();
+  });
+  return sessionRotationPromise;
+}
+async function waitForRecordingWrites() {
+  while(writeJobs.size) {
+    await Promise.allSettled([...writeJobs]);
+  }
+}
+async function waitForSessionWrites(id) {
+  await waitForRecordingWrites();
+  const failures=recordingWriteFailures.get(id);
+  if(failures?.length) {
+    throw new Error(`Storage write failed for session ${id}: ${failures[0].message}`);
+  }
+}
+async function markCompletedSessionPending(id) {
+  await dbPut("meta",{key:"pending:"+id,value:id});
+  await refreshPending();
+  await refreshSessionManager();
+}
+function resetRotatedSessionView() {
+  packetCount=0;
+  trackCount=0;
+  noGps=0;
+  rxCount=0;
+  sessionPacketEstimateCount=0;
+  sessionUploadEstimatedBytes=emptyUploadPayloadBytes(sessionId);
+  updateCounts();
+  $("rxCount").textContent="0";
+  $("packetRows").textContent="";
+  currentSessionPackets=[];
+  rebuildObservationCounts();
+  if(packetLayer) packetLayer.clearLayers();
+  if(trackLine) trackLine.setLatLngs([]);
+  $("sessionStatus").textContent=sessionDisplayName(sessionId);
+}
+async function rotateRecordingSessions() {
+  while(sessionRotationPending) {
+    const completedId=sessionId;
+    await waitForSessionWrites(completedId);
+    await markCompletedSessionPending(completedId);
+    completedSession=true;
+    if(!recording&&!rotationObservationBuffer.length) {
+      sessionRotationPending=false;
+      break;
+    }
+    await createRecordingSession(recordingReceiverName);
+    resetRotatedSessionView();
+    const buffered=rotationObservationBuffer.splice(0);
+    sessionRotationPending=false;
+    for(const observation of buffered) {
+      enqueueRecordingObservation(observation.kind,observation.point,true);
+    }
+    await waitForSessionWrites(sessionId);
+    if(!recording||sessionRotationThresholdReached()) {
+      if(recording) {
+        sessionRotationPending=true;
+        continue;
+      }
+      await markCompletedSessionPending(sessionId);
+      completedSession=true;
+      break;
+    }
+  }
+  void syncPending();
 }
 
 async function stopAndSync() {
@@ -2077,14 +2290,16 @@ async function stopAndSync() {
   if (!recording) return;
   recordingStopBusy = true;
   stopRecord();
-  const completedId = sessionId;
-  completedSession = true;
   try {
-    await Promise.allSettled([...writeJobs]);
+    if(sessionRotationPromise) await sessionRotationPromise;
+    const completedId = sessionId;
+    await waitForSessionWrites(completedId);
     await stopGPSAfterWrites();
     // Wait for any GPS write that began just before Stop.
     await new Promise(resolve => setTimeout(resolve, 150));
+    await waitForSessionWrites(completedId);
     await dbPut("meta", {key:"pending:" + completedId, value:completedId});
+    completedSession = true;
     await refreshPending();
     await refreshSessionManager();
     await syncPending();
@@ -2374,16 +2589,8 @@ async function newSession() {
     alert("Stop recording and wait for GPS or sync before creating a new session.");
     return;
   }
-  const nextSessionId = new Date().toISOString();
-
   try {
-    await dbPut("meta", {
-      key: "current",
-      value: nextSessionId
-    });
-
-    sessionId = nextSessionId;
-    completedSession = false;
+    completedSession = true;
 
     packetCount = 0;
     trackCount = 0;
@@ -2402,8 +2609,7 @@ async function newSession() {
     if (packetLayer) packetLayer.clearLayers();
     if (trackLine) trackLine.setLatLngs([]);
 
-    $("sessionStatus").textContent =
-      sessionId.slice(0, 19).replace("T", " ");
+    $("sessionStatus").textContent = "Ready for recording";
 
     log("New session started");
     await refreshSessionManager();
@@ -2530,23 +2736,18 @@ async function sessionCatalog() {
     return {id,packets,track,pending:pending.has(id),synced:synced.has(id),
       ack:acks.get(id)||null,check:checks.get(id)||null};
   }));
-  sessions.sort((a,b)=>{
-    const ta=Date.parse(a.id),tb=Date.parse(b.id);
-    const validA=Number.isFinite(ta),validB=Number.isFinite(tb);
-    if(validA&&validB&&ta!==tb) return tb-ta;
-    if(validA!==validB) return validA?-1:1;
-    return b.id.localeCompare(a.id);
-  });
+  sessions.sort((a,b)=>compareSessionIds(a.id,b.id));
   return sessions;
 }
 const sessionVerification=new Map();
 function formattedSessionDate(id) {
-  const date=new Date(id);
+  const date=new Date(sessionTimestamp(id));
   return Number.isNaN(date.getTime())?"Date unavailable":date.toLocaleString();
 }
 function activeSession(id) {
   return id===sessionId && (recording || recordingStartPending ||
-    recordingStartBusy || (!completedSession&&packetCount===0&&trackCount===0));
+    recordingStartBusy || recordingStopBusy || sessionRotationPending ||
+    (!completedSession&&packetCount===0&&trackCount===0));
 }
 function usableServerBase() {
   try { return serverBase(); } catch { return ""; }
@@ -2588,6 +2789,7 @@ function renderSessionManager(sessions) {
     const title=document.createElement("h4");
     title.textContent=`${session.id} · ${formattedSessionDate(session.id)}`;
     card.append(title);
+    appendSessionRow(card,"Receiver",sessionReceiverName(session.id)||"Not recorded (historical)");
     appendSessionRow(card,"Radio packets",session.packets);
     appendSessionRow(card,"GPS track points",session.track);
     const localStatus=managerUploadingId===session.id?"Uploading":
@@ -2746,22 +2948,20 @@ async function verifyAllSessions() {
   }
 }
 function uploadPayload(id,packets,track) {
-  return {session_id:id,source:"WarDriver-v0.7.7",
-    packets:packets.map(({
-      id:localId,session,raw_packet_hex,advertisement_public_key,
-      advertisement_signature_verified,candidate_repeater_keys,
-      candidate_repeater_names,identification_evidence,evidence_class,
-      direct_repeater_key,likely_last_hop_key,last_hop_hash,
-      last_hop_candidates,...rest
-    })=>({...rest,node_id:rest.node_key||null})),
-    track:track.map(({id:localId,session,...rest})=>rest)};
+  return {session_id:id,source:"WarDriver-v0.7.8",
+    packets:packets.map(uploadPacketRecord),
+    track:track.map(uploadTrackRecord)};
 }
 async function postSession(id,packets,track,base=serverBase()) {
+  const body=JSON.stringify(uploadPayload(id,packets,track));
+  if(utf8ByteLength(body)>MAX_SESSION_UPLOAD_BYTES) {
+    throw new Error("Session upload payload exceeds the 5 MB server limit; local data and pending marker were retained.");
+  }
   const response=await fetch(base+"/api/sessions",{
     method:"POST",
     headers:{"Content-Type":"application/json",
       "Authorization":"Bearer "+uploadToken},
-    body:JSON.stringify(uploadPayload(id,packets,track)),
+    body,
     cache:"no-store"
   });
   if(!response.ok) throw new Error("HTTP "+response.status);
@@ -2877,6 +3077,10 @@ async function uploadManagedSession(id) {
   } finally {
     managerUploadingId=null;
     await refreshSessionManager();
+    if(syncQueued) {
+      syncQueued=false;
+      setTimeout(()=>void syncPending(),0);
+    }
   }
 }
 function deleteMeta(key) {
@@ -2887,7 +3091,11 @@ function deleteMeta(key) {
   });
 }
 async function syncPending() {
-  if (syncBusy||managerUploadingId!==null) return;
+  if (syncBusy||managerUploadingId!==null) {
+    syncQueued=true;
+    return;
+  }
+  syncQueued=false;
   if (!db) { syncState("Storage unavailable"); return; }
   const ids=await refreshPending();
   if (!syncUrl.trim()) {syncState("Server not configured");return;}
@@ -2929,6 +3137,7 @@ async function syncPending() {
         continue;
       }
       managerUploadingId=id;
+      managerUploadAutomatic=true;
       try {
         await refreshSessionManager();
         const result=await attemptSessionUpload(id,{knownRows:rows,base});
@@ -2936,6 +3145,7 @@ async function syncPending() {
         else if(result.status==="Count mismatch") syncState("Pending - server count mismatch");
       } finally {
         managerUploadingId=null;
+        managerUploadAutomatic=false;
       }
     }
     await refreshPending();
@@ -2949,8 +3159,13 @@ async function syncPending() {
     }
   } finally {
     syncBusy=false;
+    managerUploadAutomatic=false;
     await refreshPending();
     await refreshSessionManager();
+    if(syncQueued) {
+      syncQueued=false;
+      setTimeout(()=>void syncPending(),0);
+    }
   }
 }
 
@@ -2971,7 +3186,7 @@ function updateButtons() {
   rec.className = recording ? "active-stop" : "";
   rec.setAttribute("aria-pressed", String(recording));
   rec.disabled = recordingStartBusy || recordingStopBusy ||
-    managerUploadingId!==null ||
+    (managerUploadingId!==null&&!managerUploadAutomatic) ||
     Boolean(gpsStopPromise);
   ble.setAttribute("aria-pressed", String(connected));
 }
